@@ -7,6 +7,7 @@ Retrieves and extracts press release text (Exhibit 99.1) from 8-K filings on EDG
 import re
 import requests
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional
 
 
@@ -176,8 +177,7 @@ class SEC8KClient:
         cik = self.get_cik_from_ticker(ticker)
         filings = self.get_recent_8k_filings(cik, count, item_filter)
 
-        results = []
-        for filing in filings:
+        def fetch_one(filing: Dict) -> Dict:
             cik_int = int(cik)
             accession_nodash = filing['accession'].replace('-', '')
             entry = {
@@ -189,7 +189,6 @@ class SEC8KClient:
                 'exhibit_url': None,
                 'text': None,
             }
-
             doc = self.get_filing_exhibit(cik, filing['accession'])
             if doc and doc.get('name'):
                 filename = doc['name']
@@ -198,8 +197,15 @@ class SEC8KClient:
                     entry['text'] = self.fetch_document_text(cik, filing['accession'], filename)
                 except Exception as e:
                     entry['text'] = f"[Error fetching exhibit: {e}]"
+            return entry
 
-            results.append(entry)
+        # Fetch exhibits in parallel (capped at 5 workers to respect SEC rate limits)
+        workers = min(len(filings), 5)
+        results: List[Dict] = [None] * len(filings)  # type: ignore[list-item]
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_idx = {executor.submit(fetch_one, f): i for i, f in enumerate(filings)}
+            for future in as_completed(future_to_idx):
+                results[future_to_idx[future]] = future.result()
 
         return results
 

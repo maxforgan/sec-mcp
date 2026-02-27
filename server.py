@@ -374,7 +374,9 @@ async def handle_call_tool(
             item_filter = arguments.get("item_filter") or None
 
             client = SEC8KClient()
-            releases = client.get_press_releases(ticker, count=count, item_filter=item_filter)
+            releases = await asyncio.to_thread(
+                client.get_press_releases, ticker, count=count, item_filter=item_filter
+            )
             output = format_press_releases(releases)
 
             return [
