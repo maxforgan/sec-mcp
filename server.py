@@ -16,6 +16,7 @@ from sec_mcp import SECClient, format_filings_output
 from sec_financials import SECFinancialsClient, format_financial_statement
 from sec_tables import SECTableExtractor
 from sec_13f import SEC13FClient, format_13f_holdings
+from sec_8k import SEC8KClient, format_press_releases
 
 
 # Create server instance
@@ -231,6 +232,40 @@ async def handle_list_tools() -> list[types.Tool]:
                 "required": ["ticker_or_cik"],
             },
         ),
+        types.Tool(
+            name="get-8k-press-releases",
+            description=(
+                "Retrieve 8-K press releases from SEC EDGAR, including the full text of "
+                "Exhibit 99.1. Useful for finding operational metrics, testing volumes, "
+                "earnings results, and other data disclosed in press releases but not "
+                "available in structured financial statements (e.g. AdaptHealth equipment "
+                "resupply volumes, patient counts, or other KPIs)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "Stock ticker symbol (e.g., AHCO, AAPL, MSFT)",
+                    },
+                    "count": {
+                        "type": "number",
+                        "description": "Number of 8-K filings to retrieve (default: 5, max: 20)",
+                        "default": 5,
+                    },
+                    "item_filter": {
+                        "type": "string",
+                        "description": (
+                            "Optional: filter by 8-K item number. "
+                            "Common values: '2.02' (results of operations / earnings), "
+                            "'7.01' (Regulation FD disclosure), '8.01' (other events). "
+                            "Leave blank to return all 8-Ks."
+                        ),
+                    },
+                },
+                "required": ["ticker"],
+            },
+        ),
     ]
 
 
@@ -323,6 +358,24 @@ async def handle_call_tool(
             client = SEC13FClient()
             holdings = client.get_latest_13f_holdings(ticker_or_cik)
             output = format_13f_holdings(holdings, top_n=top_n, return_all=return_all)
+
+            return [
+                types.TextContent(
+                    type="text",
+                    text=output
+                )
+            ]
+
+        elif name == "get-8k-press-releases":
+            ticker = arguments.get("ticker")
+            if not ticker:
+                raise ValueError("Missing required argument: ticker")
+            count = min(int(arguments.get("count", 5)), 20)
+            item_filter = arguments.get("item_filter") or None
+
+            client = SEC8KClient()
+            releases = client.get_press_releases(ticker, count=count, item_filter=item_filter)
+            output = format_press_releases(releases)
 
             return [
                 types.TextContent(
