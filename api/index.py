@@ -10,6 +10,7 @@ from mcp.server import NotificationOptions
 from starlette.applications import Starlette
 from starlette.routing import Route, Mount
 from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from server import server
 
@@ -34,7 +35,22 @@ async def handle_sse(request: Request):
         )
 
 
+async def health(request: Request):
+    return JSONResponse({"status": "SEC EDGAR MCP Server running", "endpoint": "/api/mcp"})
+
+
+async def oauth_metadata(request: Request):
+    return JSONResponse({
+        "scopes": ["mcp"],
+        "links": {
+            "mcp": "/api/mcp"
+        }
+    })
+
+
 app = Starlette(routes=[
+    Route("/", endpoint=health),
+    Route("/.well-known/oauth-protected-resource", endpoint=oauth_metadata),
     Route("/api/mcp", endpoint=handle_sse),
     Mount("/api/mcp/message", app=sse.handle_post_message),
 ])
