@@ -262,6 +262,15 @@ async def handle_list_tools() -> list[types.Tool]:
                             "Leave blank to return all 8-Ks."
                         ),
                     },
+                    "max_chars_per_release": {
+                        "type": "number",
+                        "description": (
+                            "Maximum characters to return per press release (default: 50000). "
+                            "Earnings releases are typically 20,000–60,000 chars. "
+                            "Set higher to ensure full text is returned."
+                        ),
+                        "default": 50000,
+                    },
                 },
                 "required": ["ticker"],
             },
@@ -373,11 +382,13 @@ async def handle_call_tool(
             count = min(int(arguments.get("count", 5)), 20)
             item_filter = arguments.get("item_filter") or None
 
+            max_chars = int(arguments.get("max_chars_per_release", 50000))
+
             client = SEC8KClient()
             releases = await asyncio.to_thread(
                 client.get_press_releases, ticker, count=count, item_filter=item_filter
             )
-            output = format_press_releases(releases)
+            output = format_press_releases(releases, max_chars_per_release=max_chars)
 
             return [
                 types.TextContent(
