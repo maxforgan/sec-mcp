@@ -236,10 +236,10 @@ async def handle_list_tools() -> list[types.Tool]:
             name="get-8k-press-releases",
             description=(
                 "Retrieve 8-K press releases from SEC EDGAR, including the full text of "
-                "Exhibit 99.1. Useful for finding operational metrics, testing volumes, "
-                "earnings results, and other data disclosed in press releases but not "
-                "available in structured financial statements (e.g. AdaptHealth equipment "
-                "resupply volumes, patient counts, or other KPIs)."
+                "Exhibit 99.1. Useful for earnings results, guidance, management commentary, "
+                "and KPIs that companies choose to disclose in press releases. Note: granular "
+                "operational metrics (e.g. unit volumes, resupply counts) are often only "
+                "disclosed on earnings calls or in supplemental filings, not in EX-99.1."
             ),
             inputSchema={
                 "type": "object",
