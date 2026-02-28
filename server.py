@@ -15,7 +15,7 @@ from aiohttp import web
 from sec_mcp import SECClient, format_filings_output
 from sec_financials import SECFinancialsClient, format_financial_statement
 from sec_tables import SECTableExtractor
-from sec_13f import SEC13FClient, format_13f_holdings
+from sec_13f import SEC13FClient, format_13f_holdings, format_13f_history
 from sec_8k import SEC8KClient, format_press_releases
 from sec_filing_text import SECFilingTextClient, format_filing_text
 from sec_company_search import SECCompanySearchClient, format_company_search_results
@@ -260,27 +260,40 @@ async def handle_list_tools() -> list[types.Tool]:
         types.Tool(
             name="get-13f-holdings",
             description=(
-                "Get the latest 13F holdings for an investment firm. "
-                "Returns the top N holdings by value from the most recent 13F filing. "
-                "Requires a ticker symbol or CIK number — investment firms rarely have tickers. "
-                "If you only have the firm name, use search-company first to find their CIK "
-                "(e.g., search-company(name='Divisadero Capital', filing_type='13F-HR') → get CIK → get-13f-holdings)."
+                "Get the latest 13F holdings for an investment firm, with optional multi-quarter history. "
+                "Returns holdings sorted by value. When quarters>1, also shows new/closed positions and "
+                "significant changes between the most recent and prior quarter.\n\n"
+                "IMPORTANT: Investment firms don't have stock tickers — use their CIK number. "
+                "Workflow: search-company(name='Firm Name') → copy CIK → get-13f-holdings(ticker_or_cik='CIK').\n\n"
+                "Examples:\n"
+                "  Latest holdings: ticker_or_cik='0001901865'\n"
+                "  Past year (4Q):  ticker_or_cik='0001901865', quarters=4\n"
+                "  Past 3 years:    ticker_or_cik='0001901865', quarters=12"
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "ticker_or_cik": {
                         "type": "string",
-                        "description": "Ticker symbol or 10-digit CIK of the investment firm (e.g., 'BRK-A', '0001067983'). Use search-company to find CIK if unknown.",
+                        "description": "Ticker symbol or CIK of the investment firm. Use search-company to find the CIK if you only have a name (e.g., '0001901865' for Divisadero, '0001067983' for Berkshire).",
+                    },
+                    "quarters": {
+                        "type": "number",
+                        "description": (
+                            "Number of quarterly 13F filings to retrieve (default: 1 = latest only). "
+                            "Use 4 for 1 year, 8 for 2 years, 12 for 3 years. "
+                            "When >1, output includes position changes vs prior quarter."
+                        ),
+                        "default": 1,
                     },
                     "top_n": {
                         "type": "number",
-                        "description": "Number of top holdings to display (default: 20)",
+                        "description": "Number of top holdings to display in the current-quarter table (default: 20)",
                         "default": 20,
                     },
                     "return_all": {
                         "type": "boolean",
-                        "description": "If true, return all holdings instead of just the top N (default: false)",
+                        "description": "If true, show all holdings (not just top N) when quarters=1. Ignored when quarters>1.",
                         "default": False,
                     },
                 },
@@ -502,12 +515,19 @@ async def handle_call_tool(
             if not ticker_or_cik:
                 raise ValueError("Missing required argument: ticker_or_cik")
 
+            quarters = int(arguments.get("quarters", 1))
             top_n = int(arguments.get("top_n", 20))
             return_all = arguments.get("return_all", False)
 
             client = SEC13FClient()
-            holdings = await asyncio.to_thread(client.get_latest_13f_holdings, ticker_or_cik)
-            output = format_13f_holdings(holdings, top_n=top_n, return_all=return_all)
+            if quarters > 1:
+                filings = await asyncio.to_thread(
+                    client.get_holdings_history, ticker_or_cik, quarters
+                )
+                output = format_13f_history(filings, top_n=top_n)
+            else:
+                holdings = await asyncio.to_thread(client.get_latest_13f_holdings, ticker_or_cik)
+                output = format_13f_holdings(holdings, top_n=top_n, return_all=return_all)
 
             return [
                 types.TextContent(
