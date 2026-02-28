@@ -18,6 +18,7 @@ from sec_tables import SECTableExtractor
 from sec_13f import SEC13FClient, format_13f_holdings
 from sec_8k import SEC8KClient, format_press_releases
 from sec_filing_text import SECFilingTextClient, format_filing_text
+from sec_company_search import SECCompanySearchClient, format_company_search_results
 
 
 # Create server instance
@@ -260,14 +261,17 @@ async def handle_list_tools() -> list[types.Tool]:
             name="get-13f-holdings",
             description=(
                 "Get the latest 13F holdings for an investment firm. "
-                "Returns the top N holdings by value from the most recent 13F filing."
+                "Returns the top N holdings by value from the most recent 13F filing. "
+                "Requires a ticker symbol or CIK number — investment firms rarely have tickers. "
+                "If you only have the firm name, use search-company first to find their CIK "
+                "(e.g., search-company(name='Divisadero Capital', filing_type='13F-HR') → get CIK → get-13f-holdings)."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "ticker_or_cik": {
                         "type": "string",
-                        "description": "Ticker symbol or CIK of the investment firm (e.g., 'BRK-A', '0001067983')",
+                        "description": "Ticker symbol or 10-digit CIK of the investment firm (e.g., 'BRK-A', '0001067983'). Use search-company to find CIK if unknown.",
                     },
                     "top_n": {
                         "type": "number",
@@ -376,6 +380,40 @@ async def handle_list_tools() -> list[types.Tool]:
                     },
                 },
                 "required": ["ticker"],
+            },
+        ),
+        types.Tool(
+            name="search-company",
+            description=(
+                "Search SEC EDGAR for companies or filers by name. "
+                "Returns matching entity names and their CIK numbers. "
+                "Use this when you have a company or fund name but no ticker symbol — "
+                "for example, to find a CIK for an investment firm before calling get-13f-holdings, "
+                "or to find a private company's CIK before calling get-sec-filings.\n\n"
+                "Examples: 'Divisadero Capital', 'Baupost Group', 'Tiger Global', 'Pershing Square'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Company or fund name to search for (partial match supported, e.g., 'Divisadero Capital')",
+                    },
+                    "filing_type": {
+                        "type": "string",
+                        "description": (
+                            "Optional: filter results to filers of a specific form type. "
+                            "Use '13F-HR' to find institutional investment managers, "
+                            "'10-K' to find public companies. Leave empty to return all filer types."
+                        ),
+                    },
+                    "count": {
+                        "type": "number",
+                        "description": "Maximum number of results to return (default: 20)",
+                        "default": 20,
+                    },
+                },
+                "required": ["name"],
             },
         ),
     ]
@@ -513,6 +551,26 @@ async def handle_call_tool(
                 client.get_filing_text, ticker, filing_type, section, count
             )
             output = format_filing_text(results, max_chars=max_chars)
+
+            return [
+                types.TextContent(
+                    type="text",
+                    text=output
+                )
+            ]
+
+        elif name == "search-company":
+            query = arguments.get("name")
+            if not query:
+                raise ValueError("Missing required argument: name")
+            filing_type = arguments.get("filing_type", "")
+            count = int(arguments.get("count", 20))
+
+            client = SECCompanySearchClient()
+            results = await asyncio.to_thread(
+                client.search_by_name, query, filing_type, count
+            )
+            output = format_company_search_results(results, query)
 
             return [
                 types.TextContent(
