@@ -24,6 +24,19 @@ from sec_filing_text import SECFilingTextClient, format_filing_text
 server = Server("sec-edgar")
 
 
+def _resolve_periods(arguments: dict, default: int = 8) -> int:
+    """
+    Resolve the number of periods to fetch.
+    If 'years' is provided, compute periods = years * 5 to account for
+    ~4 periods per year (3 quarterly + 1 annual) with a buffer.
+    Otherwise fall back to the explicit 'periods' argument or the default.
+    """
+    years = arguments.get("years")
+    if years is not None:
+        return max(1, int(years) * 5)
+    return int(arguments.get("periods", default))
+
+
 async def handle_request(request: web.Request) -> web.Response:
     """Handle incoming JSON-RPC requests."""
     try:
@@ -92,7 +105,9 @@ async def handle_list_tools() -> list[types.Tool]:
                 "Extract income statement data from SEC filings (10-K and 10-Q). "
                 "Returns revenues, cost of revenue, gross profit, R&D, SG&A, operating expenses, operating income, "
                 "interest expense, income tax, net income, and EPS. Each period is labeled as Annual (10-K) "
-                "or Quarterly (10-Q). Use periods=8 to get ~2 years of quarterly data."
+                "or Quarterly (10-Q), sorted most recent first.\n\n"
+                "Use 'years' to request a time range (e.g., years=5 for 5 years of history). "
+                "Results include both annual and quarterly filings — 1 year ≈ 4 periods (3 quarters + 1 annual)."
             ),
             inputSchema={
                 "type": "object",
@@ -101,10 +116,14 @@ async def handle_list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "Stock ticker symbol (e.g., AAPL, MSFT, TSLA)",
                     },
+                    "years": {
+                        "type": "number",
+                        "description": "Number of years of history to retrieve (e.g., 5 for five years). Overrides 'periods' when provided. 1 year ≈ 4 periods.",
+                    },
                     "periods": {
                         "type": "number",
-                        "description": "Number of periods to retrieve (default: 4). Includes both annual and quarterly periods sorted most recent first.",
-                        "default": 4,
+                        "description": "Number of individual periods to retrieve (default: 8). Use 'years' instead when you want a specific time range.",
+                        "default": 8,
                     },
                 },
                 "required": ["ticker"],
@@ -116,7 +135,8 @@ async def handle_list_tools() -> list[types.Tool]:
                 "Extract balance sheet data from SEC filings (10-K and 10-Q). "
                 "Returns total assets, current assets, cash, total liabilities, current liabilities, "
                 "shareholders equity, long-term debt, and retained earnings. Each period is labeled "
-                "with its filing type (10-K or 10-Q)."
+                "with its filing type (10-K or 10-Q).\n\n"
+                "Use 'years' to request a time range (e.g., years=5 for 5 years of history)."
             ),
             inputSchema={
                 "type": "object",
@@ -125,10 +145,14 @@ async def handle_list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "Stock ticker symbol (e.g., AAPL, MSFT, TSLA)",
                     },
+                    "years": {
+                        "type": "number",
+                        "description": "Number of years of history to retrieve (e.g., 5 for five years). Overrides 'periods' when provided. 1 year ≈ 4 periods.",
+                    },
                     "periods": {
                         "type": "number",
-                        "description": "Number of periods to retrieve (default: 4). Includes both annual and quarterly periods sorted most recent first.",
-                        "default": 4,
+                        "description": "Number of individual periods to retrieve (default: 8). Use 'years' instead when you want a specific time range.",
+                        "default": 8,
                     },
                 },
                 "required": ["ticker"],
@@ -140,7 +164,8 @@ async def handle_list_tools() -> list[types.Tool]:
                 "Extract cash flow statement data from SEC filings (10-K and 10-Q). "
                 "Returns operating cash flow, investing cash flow, financing cash flow, "
                 "depreciation & amortization, capital expenditures, and dividends paid. "
-                "Each period is labeled as Annual (10-K) or Quarterly (10-Q)."
+                "Each period is labeled as Annual (10-K) or Quarterly (10-Q).\n\n"
+                "Use 'years' to request a time range (e.g., years=5 for 5 years of history)."
             ),
             inputSchema={
                 "type": "object",
@@ -149,10 +174,14 @@ async def handle_list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "Stock ticker symbol (e.g., AAPL, MSFT, TSLA)",
                     },
+                    "years": {
+                        "type": "number",
+                        "description": "Number of years of history to retrieve (e.g., 5 for five years). Overrides 'periods' when provided. 1 year ≈ 4 periods.",
+                    },
                     "periods": {
                         "type": "number",
-                        "description": "Number of periods to retrieve (default: 4). Includes both annual and quarterly periods sorted most recent first.",
-                        "default": 4,
+                        "description": "Number of individual periods to retrieve (default: 8). Use 'years' instead when you want a specific time range.",
+                        "default": 8,
                     },
                 },
                 "required": ["ticker"],
@@ -391,17 +420,17 @@ async def handle_call_tool(
                 raise ValueError("Missing required argument: ticker")
 
             if name == "get-income-statement":
-                periods = int(arguments.get("periods", 4))
+                periods = _resolve_periods(arguments)
                 client = SECFinancialsClient()
                 statement = await asyncio.to_thread(client.get_income_statement, ticker, periods)
                 output = format_financial_statement(statement)
             elif name == "get-balance-sheet":
-                periods = int(arguments.get("periods", 4))
+                periods = _resolve_periods(arguments)
                 client = SECFinancialsClient()
                 statement = await asyncio.to_thread(client.get_balance_sheet, ticker, periods)
                 output = format_financial_statement(statement)
             elif name == "get-cash-flow-statement":
-                periods = int(arguments.get("periods", 4))
+                periods = _resolve_periods(arguments)
                 client = SECFinancialsClient()
                 statement = await asyncio.to_thread(client.get_cash_flow_statement, ticker, periods)
                 output = format_financial_statement(statement)
