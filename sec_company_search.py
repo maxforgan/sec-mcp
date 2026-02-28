@@ -22,7 +22,6 @@ class SECCompanySearchClient:
     def search_by_name(
         self,
         name: str,
-        filing_type: str = '',
         count: int = 20,
     ) -> List[Dict]:
         """
@@ -30,18 +29,16 @@ class SECCompanySearchClient:
 
         Args:
             name: Company or filer name to search (partial match supported)
-            filing_type: Optional filing type to filter by (e.g., '13F-HR', '10-K').
-                         Leave empty to return all filer types.
             count: Maximum number of results to return (default 20)
 
         Returns:
-            List of dicts with company name, CIK, state, SIC, and latest filing date
+            List of dicts with company name, CIK, and state
         """
         url = f"{self.BASE_URL}/cgi-bin/browse-edgar"
         params = {
             'company': name,
             'CIK': '',
-            'type': filing_type,
+            'type': '',          # No type filter — avoids switching to filings view
             'dateb': '',
             'owner': 'include',
             'count': str(min(count, 100)),
@@ -55,7 +52,10 @@ class SECCompanySearchClient:
         return self._parse_results(response.text)
 
     def _parse_results(self, html: str) -> List[Dict]:
-        """Parse the EDGAR company search results HTML."""
+        """Parse the EDGAR company search results HTML.
+
+        The company search table has 3 columns: CIK | Company | State/Country
+        """
         soup = BeautifulSoup(html, 'html.parser')
 
         results = []
@@ -65,22 +65,21 @@ class SECCompanySearchClient:
         if not table:
             return results
 
-        rows = table.find_all('tr')[1:]  # skip header
+        rows = table.find_all('tr')[1:]  # skip header row
         for row in rows:
             cols = row.find_all('td')
-            if len(cols) < 4:
+            if len(cols) < 2:
                 continue
 
-            # Column layout: Entity Name | CIK | State | SIC | Latest Filing Date
-            name_cell = cols[0]
-            cik_cell = cols[1] if len(cols) > 1 else None
+            # Column layout: CIK | Company Name | State/Country
+            cik_cell = cols[0]
+            name_cell = cols[1]
             state_cell = cols[2] if len(cols) > 2 else None
-            sic_cell = cols[3] if len(cols) > 3 else None
-            date_cell = cols[4] if len(cols) > 4 else None
 
+            cik_raw = cik_cell.get_text(strip=True)
             company_name = name_cell.get_text(strip=True)
-            cik_raw = cik_cell.get_text(strip=True) if cik_cell else ''
-            # CIK is displayed without leading zeros in the table; zero-pad to 10
+
+            # CIK may already be zero-padded from EDGAR; ensure 10 digits
             try:
                 cik = str(int(cik_raw)).zfill(10)
             except ValueError:
@@ -90,8 +89,6 @@ class SECCompanySearchClient:
                 'name': company_name,
                 'cik': cik,
                 'state': state_cell.get_text(strip=True) if state_cell else '',
-                'sic': sic_cell.get_text(strip=True) if sic_cell else '',
-                'latest_filing': date_cell.get_text(strip=True) if date_cell else '',
             })
 
         return results
@@ -106,13 +103,13 @@ def format_company_search_results(results: List[Dict], query: str) -> str:
         f"\n{'='*80}",
         f"EDGAR Company Search — '{query}'",
         f"{'='*80}",
-        f"{'Company Name':<50} {'CIK':<12} {'State':<6} {'Latest Filing'}",
-        f"{'-'*50} {'-'*12} {'-'*6} {'-'*15}",
+        f"{'Company Name':<55} {'CIK':<12} {'State'}",
+        f"{'-'*55} {'-'*12} {'-'*10}",
     ]
 
     for r in results:
         output.append(
-            f"{r['name'][:49]:<50} {r['cik']:<12} {r['state']:<6} {r['latest_filing']}"
+            f"{r['name'][:54]:<55} {r['cik']:<12} {r['state']}"
         )
 
     output.append(f"\n{len(results)} result(s) returned.")

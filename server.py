@@ -563,12 +563,11 @@ async def handle_call_tool(
             query = arguments.get("name")
             if not query:
                 raise ValueError("Missing required argument: name")
-            filing_type = arguments.get("filing_type", "")
             count = int(arguments.get("count", 20))
 
             client = SECCompanySearchClient()
             results = await asyncio.to_thread(
-                client.search_by_name, query, filing_type, count
+                client.search_by_name, query, count
             )
             output = format_company_search_results(results, query)
 
