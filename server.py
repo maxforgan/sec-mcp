@@ -88,9 +88,10 @@ async def handle_list_tools() -> list[types.Tool]:
         types.Tool(
             name="get-income-statement",
             description=(
-                "Extract income statement data from SEC filings. "
+                "Extract income statement data from SEC filings (10-K and 10-Q). "
                 "Returns revenues, cost of revenue, gross profit, operating expenses, operating income, "
-                "interest expense, income tax, net income, and EPS for multiple periods."
+                "interest expense, income tax, net income, and EPS. Each period is labeled as Annual (10-K) "
+                "or Quarterly (10-Q). Use periods=8 to get ~2 years of quarterly data."
             ),
             inputSchema={
                 "type": "object",
@@ -101,7 +102,7 @@ async def handle_list_tools() -> list[types.Tool]:
                     },
                     "periods": {
                         "type": "number",
-                        "description": "Number of periods to retrieve (default: 4)",
+                        "description": "Number of periods to retrieve (default: 4). Includes both annual and quarterly periods sorted most recent first.",
                         "default": 4,
                     },
                 },
@@ -111,9 +112,10 @@ async def handle_list_tools() -> list[types.Tool]:
         types.Tool(
             name="get-balance-sheet",
             description=(
-                "Extract balance sheet data from SEC filings. "
+                "Extract balance sheet data from SEC filings (10-K and 10-Q). "
                 "Returns total assets, current assets, cash, total liabilities, current liabilities, "
-                "shareholders equity, long-term debt, and retained earnings for multiple periods."
+                "shareholders equity, long-term debt, and retained earnings. Each period is labeled "
+                "with its filing type (10-K or 10-Q)."
             ),
             inputSchema={
                 "type": "object",
@@ -124,7 +126,7 @@ async def handle_list_tools() -> list[types.Tool]:
                     },
                     "periods": {
                         "type": "number",
-                        "description": "Number of periods to retrieve (default: 4)",
+                        "description": "Number of periods to retrieve (default: 4). Includes both annual and quarterly periods sorted most recent first.",
                         "default": 4,
                     },
                 },
@@ -134,9 +136,10 @@ async def handle_list_tools() -> list[types.Tool]:
         types.Tool(
             name="get-cash-flow-statement",
             description=(
-                "Extract cash flow statement data from SEC filings. "
+                "Extract cash flow statement data from SEC filings (10-K and 10-Q). "
                 "Returns operating cash flow, investing cash flow, financing cash flow, "
-                "depreciation & amortization, capital expenditures, and dividends paid for multiple periods."
+                "depreciation & amortization, capital expenditures, and dividends paid. "
+                "Each period is labeled as Annual (10-K) or Quarterly (10-Q)."
             ),
             inputSchema={
                 "type": "object",
@@ -147,7 +150,7 @@ async def handle_list_tools() -> list[types.Tool]:
                     },
                     "periods": {
                         "type": "number",
-                        "description": "Number of periods to retrieve (default: 4)",
+                        "description": "Number of periods to retrieve (default: 4). Includes both annual and quarterly periods sorted most recent first.",
                         "default": 4,
                     },
                 },

@@ -52,13 +52,66 @@ class SECFinancialsClient:
         except Exception as e:
             raise Exception(f"Error fetching company facts: {e}")
 
+    def _period_days(self, v: dict) -> Optional[int]:
+        """Return the number of days covered by a filing period."""
+        start, end = v.get('start'), v.get('end')
+        if not start or not end:
+            return None
+        try:
+            return (datetime.strptime(end, '%Y-%m-%d') - datetime.strptime(start, '%Y-%m-%d')).days
+        except Exception:
+            return None
+
+    def _filter_flow_values(self, values: list, periods: int) -> list:
+        """
+        Filter income/cash flow values to include:
+        - 10-K annual periods (~365 days)
+        - 10-Q single-quarter periods (~90 days), excluding year-to-date cumulative entries
+        Deduplicates by (end date, form type) and returns most recent `periods` entries.
+        """
+        filtered = []
+        for v in values:
+            form = v.get('form', '')
+            days = self._period_days(v)
+            if days is None:
+                continue
+            if form == '10-K' and 340 <= days <= 380:
+                filtered.append(v)
+            elif form == '10-Q' and 60 <= days <= 100:
+                filtered.append(v)
+
+        # Deduplicate by (end, form) keeping the most recently filed version
+        seen: Dict[tuple, dict] = {}
+        for v in sorted(filtered, key=lambda x: x.get('filed', ''), reverse=True):
+            key = (v.get('end'), v.get('form'))
+            if key not in seen:
+                seen[key] = v
+
+        return sorted(seen.values(), key=lambda x: x.get('end', ''), reverse=True)[:periods]
+
+    def _filter_balance_values(self, values: list, periods: int) -> list:
+        """
+        Filter balance sheet values (point-in-time) from 10-K and 10-Q.
+        Deduplicates by end date, keeping the most recently filed version.
+        """
+        filtered = [v for v in values if v.get('form') in ('10-K', '10-Q')]
+
+        seen: Dict[str, dict] = {}
+        for v in sorted(filtered, key=lambda x: x.get('filed', ''), reverse=True):
+            end = v.get('end', '')
+            if end not in seen:
+                seen[end] = v
+
+        return sorted(seen.values(), key=lambda x: x.get('end', ''), reverse=True)[:periods]
+
     def get_income_statement(self, ticker: str, periods: int = 4) -> Dict[str, Any]:
         """
         Get income statement for a ticker.
 
         Args:
             ticker: Stock ticker symbol
-            periods: Number of periods to retrieve (default: 4)
+            periods: Number of periods to retrieve (default: 4); includes both annual
+                     (10-K) and single-quarter (10-Q) periods, sorted most recent first.
 
         Returns:
             Dictionary with income statement data
@@ -98,7 +151,6 @@ class SECFinancialsClient:
                     item_data = us_gaap[gaap_key]
                     units = item_data.get('units', {})
 
-                    # Get USD or shares data
                     if 'USD' in units:
                         values = units['USD']
                     elif 'USD/shares' in units:
@@ -108,13 +160,7 @@ class SECFinancialsClient:
                     else:
                         continue
 
-                    # Filter for annual reports (10-K)
-                    annual_values = [v for v in values if v.get('form') == '10-K']
-
-                    # Sort by filing date and get most recent
-                    annual_values.sort(key=lambda x: x.get('end', ''), reverse=True)
-                    recent_values = annual_values[:periods]
-
+                    recent_values = self._filter_flow_values(values, periods)
                     if recent_values:
                         income_statement['data'][display_name] = recent_values
 
@@ -155,11 +201,7 @@ class SECFinancialsClient:
                     units = item_data.get('units', {})
 
                     if 'USD' in units:
-                        values = units['USD']
-                        annual_values = [v for v in values if v.get('form') == '10-K']
-                        annual_values.sort(key=lambda x: x.get('end', ''), reverse=True)
-                        recent_values = annual_values[:periods]
-
+                        recent_values = self._filter_balance_values(units['USD'], periods)
                         if recent_values:
                             balance_sheet['data'][display_name] = recent_values
 
@@ -198,11 +240,7 @@ class SECFinancialsClient:
                     units = item_data.get('units', {})
 
                     if 'USD' in units:
-                        values = units['USD']
-                        annual_values = [v for v in values if v.get('form') == '10-K']
-                        annual_values.sort(key=lambda x: x.get('end', ''), reverse=True)
-                        recent_values = annual_values[:periods]
-
+                        recent_values = self._filter_flow_values(units['USD'], periods)
                         if recent_values:
                             cash_flow['data'][display_name] = recent_values
 
@@ -231,6 +269,18 @@ def format_financial_statement(statement: Dict[str, Any]) -> str:
             end_date = value.get('end', 'N/A')
             val = value.get('val', 0)
             filed = value.get('filed', 'N/A')
+            form = value.get('form', '')
+
+            # Determine period label
+            start = value.get('start')
+            if start and end_date != 'N/A':
+                try:
+                    days = (datetime.strptime(end_date, '%Y-%m-%d') - datetime.strptime(start, '%Y-%m-%d')).days
+                    period_label = 'Annual' if days > 300 else 'Quarterly'
+                except Exception:
+                    period_label = form
+            else:
+                period_label = form  # balance sheet items have no start date
 
             # Format value
             if abs(val) >= 1_000_000_000:
@@ -242,7 +292,7 @@ def format_financial_statement(statement: Dict[str, Any]) -> str:
             else:
                 formatted_val = f"${val:,.0f}"
 
-            output.append(f"  Period Ending {end_date}: {formatted_val} (Filed: {filed})")
+            output.append(f"  {end_date} [{period_label}, {form}]: {formatted_val} (Filed: {filed})")
 
     return "\n".join(output)
 
