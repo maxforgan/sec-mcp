@@ -330,12 +330,14 @@ async def handle_list_tools() -> list[types.Tool]:
             name="get-filing-text",
             description=(
                 "Retrieve the full text of a 10-K or 10-Q filing from SEC EDGAR. "
-                "Useful for reading MD&A, business descriptions, risk factors, footnotes, "
-                "segment tables, and other narrative disclosure not captured by structured XBRL data. "
-                "Optionally extract a specific section using the 'section' parameter.\n\n"
-                "10-K sections: 'item 1'/'business', 'item 1a'/'risk factors', "
-                "'item 7'/'mda', 'item 8'/'financial statements'.\n"
-                "10-Q sections: 'item 1'/'financial statements', 'item 2'/'mda', 'item 1a'/'risk factors'."
+                "Useful for reading MD&A, footnotes/notes to financial statements, business descriptions, "
+                "risk factors, segment tables, and other narrative disclosure not captured by XBRL.\n\n"
+                "10-K sections: 'item 1'/'business', 'item 1a'/'risk factors', 'item 7'/'mda', "
+                "'item 8'/'financial statements', 'notes'/'footnotes' (Notes to Financial Statements).\n"
+                "10-Q sections: 'item 1'/'financial statements', 'item 2'/'mda', 'item 1a'/'risk factors', "
+                "'notes'/'footnotes' (Notes to Financial Statements).\n\n"
+                "IMPORTANT: Notes/footnotes sections are large (100,000–300,000 chars). "
+                "Always set max_chars=200000 or higher when using section='notes' or section='footnotes'."
             ),
             inputSchema={
                 "type": "object",
@@ -352,9 +354,10 @@ async def handle_list_tools() -> list[types.Tool]:
                     "section": {
                         "type": "string",
                         "description": (
-                            "Optional section to extract. Examples: 'mda', 'item 7', 'risk factors', "
-                            "'item 1a', 'business', 'item 1', 'financial statements', 'item 8'. "
-                            "Omit to return the full filing text (very large — recommend specifying a section)."
+                            "Section to extract. Options: 'mda', 'item 7', 'risk factors', 'item 1a', "
+                            "'business', 'item 1', 'financial statements', 'item 8', "
+                            "'notes' or 'footnotes' (Notes to Financial Statements — use max_chars=200000+). "
+                            "Omit to return the full filing text (very large — always specify a section)."
                         ),
                     },
                     "count": {
@@ -365,11 +368,11 @@ async def handle_list_tools() -> list[types.Tool]:
                     "max_chars": {
                         "type": "number",
                         "description": (
-                            "Maximum characters to return (default: 50000). "
-                            "Full 10-K filings are typically 500,000–1,500,000 chars. "
-                            "A single section (e.g. MD&A) is typically 20,000–80,000 chars."
+                            "Maximum characters to return (default: 100000). "
+                            "MD&A is typically 20,000–80,000 chars. "
+                            "Notes/footnotes are typically 100,000–300,000 chars — use 200000 or higher."
                         ),
-                        "default": 50000,
+                        "default": 100000,
                     },
                 },
                 "required": ["ticker"],
@@ -503,7 +506,7 @@ async def handle_call_tool(
             filing_type = arguments.get("filing_type", "10-K")
             section = arguments.get("section") or None
             count = int(arguments.get("count", 1))
-            max_chars = int(arguments.get("max_chars", 50000))
+            max_chars = int(arguments.get("max_chars", 100000))
 
             client = SECFilingTextClient()
             results = await asyncio.to_thread(

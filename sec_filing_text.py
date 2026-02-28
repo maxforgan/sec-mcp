@@ -26,6 +26,10 @@ _10K_SECTION_ALIASES = {
     "management discussion": 'item 7',
     'quantitative': 'item 7a',
     'financial statements': 'item 8',
+    # Notes to financial statements — search for the header that appears inside Item 8
+    'notes': 'notes to',
+    'footnotes': 'notes to',
+    'notes to financial statements': 'notes to',
     'controls': 'item 9a',
 }
 
@@ -37,6 +41,10 @@ _10Q_SECTION_ALIASES = {
     "management discussion": 'item 2',
     'quantitative': 'item 3',
     'risk factors': 'item 1a',
+    # Notes to financial statements — search for the header that appears inside Item 1
+    'notes': 'notes to',
+    'footnotes': 'notes to',
+    'notes to financial statements': 'notes to',
 }
 
 
