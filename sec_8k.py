@@ -10,6 +10,8 @@ from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional
 
+from sec_utils import get_cik_from_ticker
+
 
 class SEC8KClient:
     """Client for retrieving 8-K press releases from SEC EDGAR."""
@@ -19,18 +21,6 @@ class SEC8KClient:
 
     def __init__(self):
         self.headers = {'User-Agent': 'SEC-MCP CLI maxforgan@google.com'}
-
-    def get_cik_from_ticker(self, ticker: str) -> str:
-        """Get CIK number from ticker symbol."""
-        url = "https://www.sec.gov/files/company_tickers.json"
-        response = requests.get(url, headers=self.headers)
-        response.raise_for_status()
-        data = response.json()
-        ticker_upper = ticker.upper()
-        for item in data.values():
-            if item['ticker'] == ticker_upper:
-                return str(item['cik_str']).zfill(10)
-        raise ValueError(f"Ticker {ticker} not found")
 
     def get_recent_8k_filings(self, cik: str, count: int = 5, item_filter: Optional[str] = None) -> List[Dict]:
         """
@@ -174,7 +164,7 @@ class SEC8KClient:
         Returns:
             List of dicts with filing metadata and press release text
         """
-        cik = self.get_cik_from_ticker(ticker)
+        cik = get_cik_from_ticker(ticker, self.headers)
         filings = self.get_recent_8k_filings(cik, count, item_filter)
 
         def fetch_one(filing: Dict) -> Dict:

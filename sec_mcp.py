@@ -10,6 +10,8 @@ from bs4 import BeautifulSoup
 from typing import List, Dict
 import sys
 
+from sec_utils import get_cik_from_ticker as _get_cik_from_ticker
+
 
 class SECClient:
     """Client for interacting with the SEC EDGAR database."""
@@ -17,50 +19,13 @@ class SECClient:
     BASE_URL = "https://www.sec.gov"
 
     def __init__(self):
-        # SEC requires a user agent to be set
         self.headers = {
             'User-Agent': 'SEC-MCP CLI maxforgan@google.com'
         }
-        self._cik_cache = {}  # Initialize CIK cache
 
     def get_cik_from_ticker(self, ticker: str) -> str:
-        """
-        Convert a stock ticker symbol to a CIK number.
-        CIK is the unique identifier used by SEC.
-        """
-        ticker = ticker.upper().strip()
-        url = f"{self.BASE_URL}/cgi-bin/browse-edgar"
-        params = {
-            'action': 'getcompany',
-            'CIK': ticker,
-            'type': '',
-            'dateb': '',
-            'owner': 'exclude',
-            'count': '1'
-        }
-
-        if ticker in self._cik_cache:
-            return self._cik_cache[ticker]
-
-        try:
-            response = requests.get(url, params=params, headers=self.headers)
-            response.raise_for_status()
-
-            soup = BeautifulSoup(response.text, 'html.parser')
-            company_info = soup.find('span', class_='companyName')
-
-            if company_info:
-                # Extract CIK from the company info text
-                cik_text = company_info.text
-                if 'CIK#:' in cik_text:
-                    cik = cik_text.split('CIK#:')[1].split()[0].strip()
-                    self._cik_cache[ticker] = cik.zfill(10)  # Store in cache
-                    return self._cik_cache[ticker]
-
-            raise ValueError(f"Could not find CIK for ticker: {ticker}")
-
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Error fetching CIK: {e}")
+        """Convert a stock ticker symbol to a CIK number."""
+        return _get_cik_from_ticker(ticker, self.headers)
 
     def get_company_filings(self, ticker: str, count: int = 10, filing_type: str = None) -> List[Dict]:
         """
@@ -92,40 +57,36 @@ class SECClient:
 
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # Extract company name
             company_info = soup.find('span', class_='companyName')
             company_name = company_info.text.split('CIK#:')[0].strip() if company_info else ticker
 
-            # Find the filings table
             filings_table = soup.find('table', class_='tableFile2')
 
             if not filings_table:
                 return []
 
             filings = []
-            rows = filings_table.find_all('tr')[1:]  # Skip header row
+            rows = filings_table.find_all('tr')[1:]
 
             for row in rows:
                 cols = row.find_all('td')
                 if len(cols) >= 4:
-                    filing_type = cols[0].text.strip()
+                    row_filing_type = cols[0].text.strip()
                     filing_date = cols[3].text.strip()
 
-                    # Get the documents link
                     doc_link = cols[1].find('a')
                     if doc_link:
                         doc_url = self.BASE_URL + doc_link['href']
                     else:
                         doc_url = None
 
-                    # Get description if available
                     description = cols[2].text.strip() if len(cols) > 2 else ""
 
                     filings.append({
                         'company_name': company_name,
                         'ticker': ticker.upper(),
                         'cik': cik,
-                        'filing_type': filing_type,
+                        'filing_type': row_filing_type,
                         'filing_date': filing_date,
                         'description': description,
                         'documents_url': doc_url

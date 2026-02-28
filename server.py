@@ -17,6 +17,7 @@ from sec_financials import SECFinancialsClient, format_financial_statement
 from sec_tables import SECTableExtractor
 from sec_13f import SEC13FClient, format_13f_holdings
 from sec_8k import SEC8KClient, format_press_releases
+from sec_filing_text import SECFilingTextClient, format_filing_text
 
 
 # Create server instance
@@ -89,7 +90,7 @@ async def handle_list_tools() -> list[types.Tool]:
             name="get-income-statement",
             description=(
                 "Extract income statement data from SEC filings (10-K and 10-Q). "
-                "Returns revenues, cost of revenue, gross profit, operating expenses, operating income, "
+                "Returns revenues, cost of revenue, gross profit, R&D, SG&A, operating expenses, operating income, "
                 "interest expense, income tax, net income, and EPS. Each period is labeled as Annual (10-K) "
                 "or Quarterly (10-Q). Use periods=8 to get ~2 years of quarterly data."
             ),
@@ -160,8 +161,9 @@ async def handle_list_tools() -> list[types.Tool]:
         types.Tool(
             name="get-formatted-income-statement",
             description=(
-                "Extract the income statement in its original formatted table layout from the latest 10-K filing. "
-                "Returns the actual table as it appears in the SEC filing with all line items, periods, and formatting preserved."
+                "Extract the income statement in its original formatted table layout from the latest SEC filing. "
+                "Supports both 10-K (annual) and 10-Q (quarterly). "
+                "Returns the actual table as it appears in the filing with all line items, periods, and formatting preserved."
             ),
             inputSchema={
                 "type": "object",
@@ -169,6 +171,11 @@ async def handle_list_tools() -> list[types.Tool]:
                     "ticker": {
                         "type": "string",
                         "description": "Stock ticker symbol (e.g., AAPL, MSFT, TSLA)",
+                    },
+                    "filing_type": {
+                        "type": "string",
+                        "description": "Filing type: '10-K' (annual, default) or '10-Q' (most recent quarterly)",
+                        "default": "10-K",
                     },
                 },
                 "required": ["ticker"],
@@ -177,8 +184,9 @@ async def handle_list_tools() -> list[types.Tool]:
         types.Tool(
             name="get-formatted-balance-sheet",
             description=(
-                "Extract the balance sheet in its original formatted table layout from the latest 10-K filing. "
-                "Returns the actual table as it appears in the SEC filing with all line items and periods preserved."
+                "Extract the balance sheet in its original formatted table layout from the latest SEC filing. "
+                "Supports both 10-K (annual) and 10-Q (quarterly). "
+                "Returns the actual table as it appears in the filing with all line items and periods preserved."
             ),
             inputSchema={
                 "type": "object",
@@ -187,6 +195,11 @@ async def handle_list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "Stock ticker symbol (e.g., AAPL, MSFT, TSLA)",
                     },
+                    "filing_type": {
+                        "type": "string",
+                        "description": "Filing type: '10-K' (annual, default) or '10-Q' (most recent quarterly)",
+                        "default": "10-K",
+                    },
                 },
                 "required": ["ticker"],
             },
@@ -194,8 +207,9 @@ async def handle_list_tools() -> list[types.Tool]:
         types.Tool(
             name="get-formatted-cash-flow",
             description=(
-                "Extract the cash flow statement in its original formatted table layout from the latest 10-K filing. "
-                "Returns the actual table as it appears in the SEC filing with all line items and periods preserved."
+                "Extract the cash flow statement in its original formatted table layout from the latest SEC filing. "
+                "Supports both 10-K (annual) and 10-Q (quarterly). "
+                "Returns the actual table as it appears in the filing with all line items and periods preserved."
             ),
             inputSchema={
                 "type": "object",
@@ -203,6 +217,11 @@ async def handle_list_tools() -> list[types.Tool]:
                     "ticker": {
                         "type": "string",
                         "description": "Stock ticker symbol (e.g., AAPL, MSFT, TSLA)",
+                    },
+                    "filing_type": {
+                        "type": "string",
+                        "description": "Filing type: '10-K' (annual, default) or '10-Q' (most recent quarterly)",
+                        "default": "10-K",
                     },
                 },
                 "required": ["ticker"],
@@ -278,6 +297,55 @@ async def handle_list_tools() -> list[types.Tool]:
                 "required": ["ticker"],
             },
         ),
+        types.Tool(
+            name="get-filing-text",
+            description=(
+                "Retrieve the full text of a 10-K or 10-Q filing from SEC EDGAR. "
+                "Useful for reading MD&A, business descriptions, risk factors, footnotes, "
+                "segment tables, and other narrative disclosure not captured by structured XBRL data. "
+                "Optionally extract a specific section using the 'section' parameter.\n\n"
+                "10-K sections: 'item 1'/'business', 'item 1a'/'risk factors', "
+                "'item 7'/'mda', 'item 8'/'financial statements'.\n"
+                "10-Q sections: 'item 1'/'financial statements', 'item 2'/'mda', 'item 1a'/'risk factors'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "Stock ticker symbol (e.g., AAPL, MSFT, TSLA)",
+                    },
+                    "filing_type": {
+                        "type": "string",
+                        "description": "Filing type: '10-K' (annual, default) or '10-Q' (quarterly)",
+                        "default": "10-K",
+                    },
+                    "section": {
+                        "type": "string",
+                        "description": (
+                            "Optional section to extract. Examples: 'mda', 'item 7', 'risk factors', "
+                            "'item 1a', 'business', 'item 1', 'financial statements', 'item 8'. "
+                            "Omit to return the full filing text (very large — recommend specifying a section)."
+                        ),
+                    },
+                    "count": {
+                        "type": "number",
+                        "description": "Number of recent filings to retrieve (default: 1)",
+                        "default": 1,
+                    },
+                    "max_chars": {
+                        "type": "number",
+                        "description": (
+                            "Maximum characters to return (default: 50000). "
+                            "Full 10-K filings are typically 500,000–1,500,000 chars. "
+                            "A single section (e.g. MD&A) is typically 20,000–80,000 chars."
+                        ),
+                        "default": 50000,
+                    },
+                },
+                "required": ["ticker"],
+            },
+        ),
     ]
 
 
@@ -298,11 +366,9 @@ async def handle_call_tool(
             count = int(arguments.get("count", 10))
             filing_type = arguments.get("filing_type")
 
-            # Validate count
             if count < 1 or count > 100:
                 raise ValueError("count must be between 1 and 100")
 
-            # Create SEC client and fetch filings
             client = SECClient()
             filings = client.get_company_filings(
                 ticker=ticker,
@@ -310,7 +376,6 @@ async def handle_call_tool(
                 filing_type=filing_type
             )
 
-            # Format the output
             output = format_filings_output(filings)
 
             return [
@@ -324,33 +389,36 @@ async def handle_call_tool(
             ticker = arguments.get("ticker")
             if not ticker:
                 raise ValueError("Missing required argument: ticker")
-            
+
             if name == "get-income-statement":
                 periods = int(arguments.get("periods", 4))
                 client = SECFinancialsClient()
-                statement = client.get_income_statement(ticker, periods)
+                statement = await asyncio.to_thread(client.get_income_statement, ticker, periods)
                 output = format_financial_statement(statement)
             elif name == "get-balance-sheet":
                 periods = int(arguments.get("periods", 4))
                 client = SECFinancialsClient()
-                statement = client.get_balance_sheet(ticker, periods)
+                statement = await asyncio.to_thread(client.get_balance_sheet, ticker, periods)
                 output = format_financial_statement(statement)
             elif name == "get-cash-flow-statement":
                 periods = int(arguments.get("periods", 4))
                 client = SECFinancialsClient()
-                statement = client.get_cash_flow_statement(ticker, periods)
+                statement = await asyncio.to_thread(client.get_cash_flow_statement, ticker, periods)
                 output = format_financial_statement(statement)
             elif name == "get-formatted-income-statement":
+                filing_type = arguments.get("filing_type", "10-K")
                 extractor = SECTableExtractor()
-                output = extractor.get_income_statement_table(ticker)
+                output = await asyncio.to_thread(extractor.get_income_statement_table, ticker, filing_type)
             elif name == "get-formatted-balance-sheet":
+                filing_type = arguments.get("filing_type", "10-K")
                 extractor = SECTableExtractor()
-                output = extractor.get_balance_sheet_table(ticker)
+                output = await asyncio.to_thread(extractor.get_balance_sheet_table, ticker, filing_type)
             elif name == "get-formatted-cash-flow":
+                filing_type = arguments.get("filing_type", "10-K")
                 extractor = SECTableExtractor()
-                output = extractor.get_cash_flow_table(ticker)
+                output = await asyncio.to_thread(extractor.get_cash_flow_table, ticker, filing_type)
             else:
-                 raise ValueError(f"Unknown tool: {name}")
+                raise ValueError(f"Unknown tool: {name}")
 
             return [
                 types.TextContent(
@@ -368,7 +436,7 @@ async def handle_call_tool(
             return_all = arguments.get("return_all", False)
 
             client = SEC13FClient()
-            holdings = client.get_latest_13f_holdings(ticker_or_cik)
+            holdings = await asyncio.to_thread(client.get_latest_13f_holdings, ticker_or_cik)
             output = format_13f_holdings(holdings, top_n=top_n, return_all=return_all)
 
             return [
@@ -384,7 +452,6 @@ async def handle_call_tool(
                 raise ValueError("Missing required argument: ticker")
             count = min(int(arguments.get("count", 5)), 20)
             item_filter = arguments.get("item_filter") or None
-
             max_chars = int(arguments.get("max_chars_per_release", 50000))
 
             client = SEC8KClient()
@@ -392,6 +459,28 @@ async def handle_call_tool(
                 client.get_press_releases, ticker, count=count, item_filter=item_filter
             )
             output = format_press_releases(releases, max_chars_per_release=max_chars)
+
+            return [
+                types.TextContent(
+                    type="text",
+                    text=output
+                )
+            ]
+
+        elif name == "get-filing-text":
+            ticker = arguments.get("ticker")
+            if not ticker:
+                raise ValueError("Missing required argument: ticker")
+            filing_type = arguments.get("filing_type", "10-K")
+            section = arguments.get("section") or None
+            count = int(arguments.get("count", 1))
+            max_chars = int(arguments.get("max_chars", 50000))
+
+            client = SECFilingTextClient()
+            results = await asyncio.to_thread(
+                client.get_filing_text, ticker, filing_type, section, count
+            )
+            output = format_filing_text(results, max_chars=max_chars)
 
             return [
                 types.TextContent(

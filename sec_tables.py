@@ -9,6 +9,8 @@ from bs4 import BeautifulSoup
 from typing import List, Dict, Optional, Any
 import re
 
+from sec_utils import get_cik_from_ticker
+
 
 class SECTableExtractor:
     """Extracts formatted tables from SEC filings."""
@@ -17,36 +19,18 @@ class SECTableExtractor:
 
     def __init__(self):
         self.headers = {
-            'User-Agent': 'SEC-Tables sec-tables@example.com'
+            'User-Agent': 'SEC-MCP CLI maxforgan@google.com'
         }
 
-    def get_cik_from_ticker(self, ticker: str) -> str:
-        """Convert ticker to CIK."""
-        url = "https://www.sec.gov/files/company_tickers.json"
-        try:
-            response = requests.get(url, headers=self.headers)
-            response.raise_for_status()
-            data = response.json()
+    def get_latest_filing_url(self, ticker: str, filing_type: str = '10-K') -> str:
+        """Get the URL of the most recent filing document of the given type."""
+        cik = get_cik_from_ticker(ticker, self.headers)
 
-            ticker_upper = ticker.upper()
-            for item in data.values():
-                if item['ticker'] == ticker_upper:
-                    return str(item['cik_str']).zfill(10)
-
-            raise ValueError(f"Ticker {ticker} not found")
-        except Exception as e:
-            raise Exception(f"Error getting CIK: {e}")
-
-    def get_latest_10k_url(self, ticker: str) -> str:
-        """Get the URL of the most recent 10-K filing."""
-        cik = self.get_cik_from_ticker(ticker)
-
-        # Browse filings
         url = f"{self.BASE_URL}/cgi-bin/browse-edgar"
         params = {
             'action': 'getcompany',
             'CIK': cik,
-            'type': '10-K',
+            'type': filing_type,
             'dateb': '',
             'owner': 'exclude',
             'count': '1'
@@ -58,10 +42,9 @@ class SECTableExtractor:
 
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # Find the documents link
             table = soup.find('table', class_='tableFile2')
             if not table:
-                raise ValueError("No 10-K filings found")
+                raise ValueError(f"No {filing_type} filings found for {ticker.upper()}")
 
             doc_link = table.find('a', id='documentsbutton')
             if not doc_link:
@@ -69,35 +52,31 @@ class SECTableExtractor:
 
             doc_url = self.BASE_URL + doc_link['href']
 
-            # Get the actual 10-K document (not the index page)
             response = requests.get(doc_url, headers=self.headers)
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # Find the main 10-K document (usually .htm or .html)
             doc_table = soup.find('table', class_='tableFile')
             if doc_table:
-                for row in doc_table.find_all('tr')[1:]:  # Skip header
+                for row in doc_table.find_all('tr')[1:]:
                     cols = row.find_all('td')
                     if len(cols) >= 4:
                         doc_type = cols[3].text.strip()
-                        if doc_type == '10-K':
+                        if doc_type == filing_type:
                             link = cols[2].find('a')
                             if link:
                                 href = link['href']
-                                # Handle iXBRL links - extract the actual document URL
                                 if '/ix?doc=' in href:
-                                    # Extract the actual filing URL from the ix parameter
                                     actual_url = href.split('/ix?doc=')[1]
                                     return self.BASE_URL + actual_url
                                 else:
                                     return self.BASE_URL + href
 
-            raise ValueError("Could not find 10-K document")
+            raise ValueError(f"Could not find {filing_type} document")
 
         except Exception as e:
-            raise Exception(f"Error getting 10-K URL: {e}")
+            raise Exception(f"Error getting {filing_type} URL: {e}")
 
     def extract_financial_tables(self, filing_url: str) -> Dict[str, Any]:
         """Extract financial statement tables from filing HTML."""
@@ -106,8 +85,6 @@ class SECTableExtractor:
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, 'html.parser')
-
-            # Find all tables
             tables = soup.find_all('table')
 
             financial_tables = {
@@ -117,7 +94,6 @@ class SECTableExtractor:
                 'all_tables': []
             }
 
-            # Keywords to identify financial statements
             income_keywords = ['income', 'operations', 'earnings']
             balance_keywords = ['balance', 'financial position', 'assets']
             cashflow_keywords = ['cash flow', 'cash flows']
@@ -125,7 +101,6 @@ class SECTableExtractor:
             for idx, table in enumerate(tables):
                 table_text = table.get_text().lower()
 
-                # Try to identify the table type
                 table_info = {
                     'index': idx,
                     'type': 'unknown',
@@ -164,31 +139,26 @@ class SECTableExtractor:
         for tr in table.find_all('tr'):
             cells = []
             for td in tr.find_all(['td', 'th']):
-                # Get text and clean it
                 text = td.get_text(strip=True)
-                # Remove excessive whitespace
                 text = re.sub(r'\s+', ' ', text)
                 cells.append(text)
 
-            if cells:  # Only add non-empty rows
+            if cells:
                 rows.append(cells)
 
         if not rows:
             return "No data found"
 
-        # Calculate column widths
         col_widths = [0] * max(len(row) for row in rows)
         for row in rows:
             for i, cell in enumerate(row):
                 col_widths[i] = max(col_widths[i], len(cell))
 
-        # Format as aligned text table
         output = []
         for row in rows:
             formatted_row = []
             for i, cell in enumerate(row):
                 if i < len(col_widths):
-                    # Right-align numbers, left-align text
                     if cell.replace(',', '').replace('.', '').replace('-', '').replace('(', '').replace(')', '').replace('$', '').isdigit():
                         formatted_row.append(cell.rjust(col_widths[i]))
                     else:
@@ -198,59 +168,59 @@ class SECTableExtractor:
 
         return '\n'.join(output)
 
-    def get_income_statement_table(self, ticker: str) -> str:
+    def get_income_statement_table(self, ticker: str, filing_type: str = '10-K') -> str:
         """Get formatted income statement table."""
         try:
-            filing_url = self.get_latest_10k_url(ticker)
+            filing_url = self.get_latest_filing_url(ticker, filing_type=filing_type)
             tables = self.extract_financial_tables(filing_url)
 
             if tables['income_statement']:
                 output = f"\n{'='*80}\n"
                 output += f"Income Statement - {ticker.upper()}\n"
-                output += f"Source: Latest 10-K Filing\n"
+                output += f"Source: Latest {filing_type} Filing\n"
                 output += f"{'='*80}\n\n"
                 output += tables['income_statement']
                 return output
             else:
-                return f"Could not find income statement table in latest 10-K for {ticker.upper()}"
+                return f"Could not find income statement table in latest {filing_type} for {ticker.upper()}"
 
         except Exception as e:
             return f"Error: {str(e)}"
 
-    def get_balance_sheet_table(self, ticker: str) -> str:
+    def get_balance_sheet_table(self, ticker: str, filing_type: str = '10-K') -> str:
         """Get formatted balance sheet table."""
         try:
-            filing_url = self.get_latest_10k_url(ticker)
+            filing_url = self.get_latest_filing_url(ticker, filing_type=filing_type)
             tables = self.extract_financial_tables(filing_url)
 
             if tables['balance_sheet']:
                 output = f"\n{'='*80}\n"
                 output += f"Balance Sheet - {ticker.upper()}\n"
-                output += f"Source: Latest 10-K Filing\n"
+                output += f"Source: Latest {filing_type} Filing\n"
                 output += f"{'='*80}\n\n"
                 output += tables['balance_sheet']
                 return output
             else:
-                return f"Could not find balance sheet table in latest 10-K for {ticker.upper()}"
+                return f"Could not find balance sheet table in latest {filing_type} for {ticker.upper()}"
 
         except Exception as e:
             return f"Error: {str(e)}"
 
-    def get_cash_flow_table(self, ticker: str) -> str:
+    def get_cash_flow_table(self, ticker: str, filing_type: str = '10-K') -> str:
         """Get formatted cash flow statement table."""
         try:
-            filing_url = self.get_latest_10k_url(ticker)
+            filing_url = self.get_latest_filing_url(ticker, filing_type=filing_type)
             tables = self.extract_financial_tables(filing_url)
 
             if tables['cash_flow']:
                 output = f"\n{'='*80}\n"
                 output += f"Cash Flow Statement - {ticker.upper()}\n"
-                output += f"Source: Latest 10-K Filing\n"
+                output += f"Source: Latest {filing_type} Filing\n"
                 output += f"{'='*80}\n\n"
                 output += tables['cash_flow']
                 return output
             else:
-                return f"Could not find cash flow statement table in latest 10-K for {ticker.upper()}"
+                return f"Could not find cash flow statement table in latest {filing_type} for {ticker.upper()}"
 
         except Exception as e:
             return f"Error: {str(e)}"
@@ -264,6 +234,8 @@ def main():
     parser.add_argument('ticker', help='Stock ticker symbol')
     parser.add_argument('--statement', choices=['income', 'balance', 'cashflow'],
                        default='income', help='Type of statement')
+    parser.add_argument('--filing-type', default='10-K', choices=['10-K', '10-Q'],
+                       help='Filing type (default: 10-K)')
 
     args = parser.parse_args()
 
@@ -271,11 +243,11 @@ def main():
         extractor = SECTableExtractor()
 
         if args.statement == 'income':
-            print(extractor.get_income_statement_table(args.ticker))
+            print(extractor.get_income_statement_table(args.ticker, args.filing_type))
         elif args.statement == 'balance':
-            print(extractor.get_balance_sheet_table(args.ticker))
+            print(extractor.get_balance_sheet_table(args.ticker, args.filing_type))
         elif args.statement == 'cashflow':
-            print(extractor.get_cash_flow_table(args.ticker))
+            print(extractor.get_cash_flow_table(args.ticker, args.filing_type))
 
     except Exception as e:
         print(f"Error: {e}")

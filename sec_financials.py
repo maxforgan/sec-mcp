@@ -5,9 +5,10 @@ Extracts income statement, balance sheet, and cash flow from SEC filings.
 """
 
 import requests
-import pandas as pd
 from typing import Dict, Any, Optional
 from datetime import datetime
+
+from sec_utils import get_cik_from_ticker
 
 
 class SECFinancialsClient:
@@ -17,34 +18,13 @@ class SECFinancialsClient:
     COMPANY_FACTS_URL = f"{BASE_URL}/api/xbrl/companyfacts"
 
     def __init__(self):
-        # SEC requires a user agent
         self.headers = {
-            'User-Agent': 'SEC-Financials sec-financials@example.com'
+            'User-Agent': 'SEC-MCP CLI maxforgan@google.com'
         }
-
-    def get_cik_from_ticker(self, ticker: str) -> str:
-        """Get CIK number from ticker symbol."""
-        # Get ticker to CIK mapping
-        url = "https://www.sec.gov/files/company_tickers.json"
-        try:
-            response = requests.get(url, headers=self.headers)
-            response.raise_for_status()
-            data = response.json()
-
-            ticker_upper = ticker.upper()
-            for item in data.values():
-                if item['ticker'] == ticker_upper:
-                    cik = str(item['cik_str']).zfill(10)
-                    return cik
-
-            raise ValueError(f"Ticker {ticker} not found")
-        except Exception as e:
-            raise Exception(f"Error getting CIK: {e}")
 
     def get_company_facts(self, cik: str) -> Dict:
         """Get all company facts (financial data) for a CIK."""
         url = f"{self.COMPANY_FACTS_URL}/CIK{cik}.json"
-
         try:
             response = requests.get(url, headers=self.headers)
             response.raise_for_status()
@@ -104,6 +84,25 @@ class SECFinancialsClient:
 
         return sorted(seen.values(), key=lambda x: x.get('end', ''), reverse=True)[:periods]
 
+    def _get_first_matching(self, us_gaap: dict, gaap_keys: list, filter_fn, periods: int) -> list:
+        """Try each GAAP tag in order and return data from the first one that has values."""
+        for gaap_key in gaap_keys:
+            if gaap_key not in us_gaap:
+                continue
+            units = us_gaap[gaap_key].get('units', {})
+            if 'USD' in units:
+                values = units['USD']
+            elif 'USD/shares' in units:
+                values = units['USD/shares']
+            elif 'shares' in units:
+                values = units['shares']
+            else:
+                continue
+            result = filter_fn(values, periods)
+            if result:
+                return result
+        return []
+
     def get_income_statement(self, ticker: str, periods: int = 4) -> Dict[str, Any]:
         """
         Get income statement for a ticker.
@@ -112,15 +111,10 @@ class SECFinancialsClient:
             ticker: Stock ticker symbol
             periods: Number of periods to retrieve (default: 4); includes both annual
                      (10-K) and single-quarter (10-Q) periods, sorted most recent first.
-
-        Returns:
-            Dictionary with income statement data
         """
         try:
-            cik = self.get_cik_from_ticker(ticker)
+            cik = get_cik_from_ticker(ticker, self.headers)
             facts = self.get_company_facts(cik)
-
-            # Extract US-GAAP data
             us_gaap = facts.get('facts', {}).get('us-gaap', {})
 
             income_statement = {
@@ -130,39 +124,45 @@ class SECFinancialsClient:
                 'data': {}
             }
 
-            # Key income statement line items
+            # Each entry: display_name -> [gaap_tags...] tried in priority order
             line_items = {
-                'Revenues': 'Revenues',
-                'RevenueFromContractWithCustomerExcludingAssessedTax': 'Revenues',
-                'CostOfRevenue': 'Cost of Revenue',
-                'CostOfGoodsAndServicesSold': 'Cost of Revenue',
-                'GrossProfit': 'Gross Profit',
-                'OperatingExpenses': 'Operating Expenses',
-                'OperatingIncomeLoss': 'Operating Income',
-                'InterestExpense': 'Interest Expense',
-                'IncomeTaxExpenseBenefit': 'Income Tax Expense',
-                'NetIncomeLoss': 'Net Income',
-                'EarningsPerShareBasic': 'EPS Basic',
-                'EarningsPerShareDiluted': 'EPS Diluted',
+                'Revenues': [
+                    'Revenues',
+                    'RevenueFromContractWithCustomerExcludingAssessedTax',
+                    'RevenueFromContractWithCustomerIncludingAssessedTax',
+                    'SalesRevenueNet',
+                    'SalesRevenueGoodsNet',
+                ],
+                'Cost of Revenue': [
+                    'CostOfRevenue',
+                    'CostOfGoodsAndServicesSold',
+                    'CostOfGoodsSold',
+                    'CostOfServices',
+                ],
+                'Gross Profit': ['GrossProfit'],
+                'Research & Development': ['ResearchAndDevelopmentExpense'],
+                'Selling, General & Admin': ['SellingGeneralAndAdministrativeExpense'],
+                'Operating Expenses': ['OperatingExpenses'],
+                'Operating Income': ['OperatingIncomeLoss'],
+                'Interest Expense': ['InterestExpense', 'InterestExpenseDebt'],
+                'Income Before Tax': [
+                    'IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest',
+                    'IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments',
+                ],
+                'Income Tax Expense': ['IncomeTaxExpenseBenefit'],
+                'Net Income': [
+                    'NetIncomeLoss',
+                    'ProfitLoss',
+                    'NetIncomeLossAvailableToCommonStockholdersBasic',
+                ],
+                'EPS Basic': ['EarningsPerShareBasic'],
+                'EPS Diluted': ['EarningsPerShareDiluted'],
             }
 
-            for gaap_key, display_name in line_items.items():
-                if gaap_key in us_gaap:
-                    item_data = us_gaap[gaap_key]
-                    units = item_data.get('units', {})
-
-                    if 'USD' in units:
-                        values = units['USD']
-                    elif 'USD/shares' in units:
-                        values = units['USD/shares']
-                    elif 'shares' in units:
-                        values = units['shares']
-                    else:
-                        continue
-
-                    recent_values = self._filter_flow_values(values, periods)
-                    if recent_values:
-                        income_statement['data'][display_name] = recent_values
+            for display_name, gaap_keys in line_items.items():
+                values = self._get_first_matching(us_gaap, gaap_keys, self._filter_flow_values, periods)
+                if values:
+                    income_statement['data'][display_name] = values
 
             return income_statement
 
@@ -172,9 +172,8 @@ class SECFinancialsClient:
     def get_balance_sheet(self, ticker: str, periods: int = 4) -> Dict[str, Any]:
         """Get balance sheet for a ticker."""
         try:
-            cik = self.get_cik_from_ticker(ticker)
+            cik = get_cik_from_ticker(ticker, self.headers)
             facts = self.get_company_facts(cik)
-
             us_gaap = facts.get('facts', {}).get('us-gaap', {})
 
             balance_sheet = {
@@ -185,25 +184,36 @@ class SECFinancialsClient:
             }
 
             line_items = {
-                'Assets': 'Total Assets',
-                'AssetsCurrent': 'Current Assets',
-                'CashAndCashEquivalentsAtCarryingValue': 'Cash and Cash Equivalents',
-                'Liabilities': 'Total Liabilities',
-                'LiabilitiesCurrent': 'Current Liabilities',
-                'StockholdersEquity': 'Shareholders Equity',
-                'LongTermDebt': 'Long-term Debt',
-                'RetainedEarningsAccumulatedDeficit': 'Retained Earnings',
+                'Total Assets': ['Assets'],
+                'Current Assets': ['AssetsCurrent'],
+                'Cash and Cash Equivalents': [
+                    'CashAndCashEquivalentsAtCarryingValue',
+                    'CashCashEquivalentsAndShortTermInvestments',
+                    'CashAndDueFromBanks',
+                ],
+                'Total Liabilities': ['Liabilities'],
+                'Current Liabilities': ['LiabilitiesCurrent'],
+                'Shareholders Equity': [
+                    'StockholdersEquity',
+                    'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest',
+                ],
+                'Long-term Debt': [
+                    'LongTermDebt',
+                    'LongTermDebtAndCapitalLeaseObligation',
+                    'LongTermDebtNoncurrent',
+                ],
+                'Retained Earnings': ['RetainedEarningsAccumulatedDeficit'],
             }
 
-            for gaap_key, display_name in line_items.items():
-                if gaap_key in us_gaap:
-                    item_data = us_gaap[gaap_key]
-                    units = item_data.get('units', {})
-
-                    if 'USD' in units:
-                        recent_values = self._filter_balance_values(units['USD'], periods)
-                        if recent_values:
-                            balance_sheet['data'][display_name] = recent_values
+            for display_name, gaap_keys in line_items.items():
+                for gaap_key in gaap_keys:
+                    if gaap_key in us_gaap:
+                        units = us_gaap[gaap_key].get('units', {})
+                        if 'USD' in units:
+                            values = self._filter_balance_values(units['USD'], periods)
+                            if values:
+                                balance_sheet['data'][display_name] = values
+                                break
 
             return balance_sheet
 
@@ -213,9 +223,8 @@ class SECFinancialsClient:
     def get_cash_flow_statement(self, ticker: str, periods: int = 4) -> Dict[str, Any]:
         """Get cash flow statement for a ticker."""
         try:
-            cik = self.get_cik_from_ticker(ticker)
+            cik = get_cik_from_ticker(ticker, self.headers)
             facts = self.get_company_facts(cik)
-
             us_gaap = facts.get('facts', {}).get('us-gaap', {})
 
             cash_flow = {
@@ -226,23 +235,28 @@ class SECFinancialsClient:
             }
 
             line_items = {
-                'NetCashProvidedByUsedInOperatingActivities': 'Operating Cash Flow',
-                'NetCashProvidedByUsedInInvestingActivities': 'Investing Cash Flow',
-                'NetCashProvidedByUsedInFinancingActivities': 'Financing Cash Flow',
-                'DepreciationDepletionAndAmortization': 'Depreciation & Amortization',
-                'PaymentsToAcquirePropertyPlantAndEquipment': 'Capital Expenditures',
-                'PaymentsOfDividends': 'Dividends Paid',
+                'Operating Cash Flow': ['NetCashProvidedByUsedInOperatingActivities'],
+                'Investing Cash Flow': ['NetCashProvidedByUsedInInvestingActivities'],
+                'Financing Cash Flow': ['NetCashProvidedByUsedInFinancingActivities'],
+                'Depreciation & Amortization': [
+                    'DepreciationDepletionAndAmortization',
+                    'DepreciationAndAmortization',
+                    'Depreciation',
+                ],
+                'Capital Expenditures': [
+                    'PaymentsToAcquirePropertyPlantAndEquipment',
+                    'PaymentsForCapitalImprovements',
+                ],
+                'Dividends Paid': [
+                    'PaymentsOfDividends',
+                    'PaymentsOfDividendsCommonStock',
+                ],
             }
 
-            for gaap_key, display_name in line_items.items():
-                if gaap_key in us_gaap:
-                    item_data = us_gaap[gaap_key]
-                    units = item_data.get('units', {})
-
-                    if 'USD' in units:
-                        recent_values = self._filter_flow_values(units['USD'], periods)
-                        if recent_values:
-                            cash_flow['data'][display_name] = recent_values
+            for display_name, gaap_keys in line_items.items():
+                values = self._get_first_matching(us_gaap, gaap_keys, self._filter_flow_values, periods)
+                if values:
+                    cash_flow['data'][display_name] = values
 
             return cash_flow
 
