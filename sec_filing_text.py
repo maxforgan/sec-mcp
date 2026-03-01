@@ -256,9 +256,10 @@ class SECFilingTextClient:
         if is_proxy:
             if section_lower in ('executive compensation', 'compensation', 'comp'):
                 search_patterns.extend([
+                    'executive compensation, including compensation discussion',
                     'executive compensation',
-                    'compensation discussion',
                     'compensation discussion and analysis',
+                    'compensation discussion',
                     'cd&a',
                     'named executive officer',
                     'summary compensation table',
@@ -288,6 +289,28 @@ class SECFilingTextClient:
                         break
 
         # Enhanced start detection with multiple strategies
+        # For executive compensation in proxy, prioritize the full section header
+        if is_proxy and section_lower in ('executive compensation', 'compensation', 'comp'):
+            # First, try to find the full section header
+            for i, line in enumerate(lines):
+                line_stripped = line.strip()
+                if not line_stripped:
+                    continue
+                line_lower = line_stripped.lower()
+                # Look for the full header "Executive Compensation, Including Compensation Discussion and Analysis"
+                if 'executive compensation, including compensation discussion' in line_lower:
+                    # Make sure it's not in a proposal
+                    if 'proposal' not in line_lower:
+                        start_idx = i
+                        break
+                # Also check for standalone "Executive Compensation" header (not in proposal)
+                elif (line_lower == 'executive compensation' or 
+                      line_lower.startswith('executive compensation') and 
+                      'proposal' not in ' '.join(lines[max(0, i-3):i+1]).lower()):
+                    start_idx = i
+                    break
+
+        # Enhanced start detection with multiple strategies
         if start_idx is None:
             for strategy in ['exact_match', 'fuzzy_match', 'context_match']:
                 for i, line in enumerate(lines):
@@ -301,13 +324,19 @@ class SECFilingTextClient:
                     if 'table of contents' in line_lower and i < 50:
                         continue
                     
+                    # Skip proposal headers for executive compensation
+                    if is_proxy and section_lower in ('executive compensation', 'compensation', 'comp'):
+                        if 'proposal' in line_lower and 'executive compensation, including' not in line_lower:
+                            continue
+                    
                     # Strategy 1: Exact match in line
                     if strategy == 'exact_match':
                         if len(line_stripped) <= 150:
                             for pattern in search_patterns:
                                 if pattern in line_lower:
                                     # Additional validation: not in TOC
-                                    if i > 50 or 'table of contents' not in ' '.join(lines[max(0, i-10):i+1]).lower():
+                                    context = ' '.join(lines[max(0, i-5):i+1]).lower()
+                                    if (i > 50 or 'table of contents' not in context):
                                         start_idx = i
                                         break
                             if start_idx is not None:
@@ -369,16 +398,87 @@ class SECFilingTextClient:
                 if re.match(r'^proposal\s+\d+', line_lower):
                     end_idx = i
                     break
-                # Major section headers (all caps, short, 2+ words)
-                if (len(line_stripped) < 100
-                        and line_stripped == line_stripped.upper()
-                        and not line_stripped.startswith('(')
-                        and len(line_stripped.split()) >= 2
-                        and not any(term in line_lower for term in ['table of', 'page', 'exhibit'])):
-                    # Make sure it's not a continuation of current section
-                    if not any(pattern in line_lower for pattern in search_patterns):
-                        end_idx = i
-                        break
+                
+                # For executive compensation, continue through related subsections
+                if section_lower in ('executive compensation', 'compensation', 'comp'):
+                    # Don't end at these compensation-related headers (they're part of the section)
+                    compensation_subheaders = [
+                        'compensation discussion',
+                        'compensation discussion and analysis',
+                        'cd&a',
+                        'named executive officer',
+                        'summary compensation',
+                        'grants of plan-based awards',
+                        'outstanding equity awards',
+                        'option exercises',
+                        'pension benefits',
+                        'nonqualified deferred compensation',
+                        'potential payments upon termination',
+                        'pay ratio',
+                        'compensation committee',
+                        'report of the compensation',
+                    ]
+                    
+                    # Check if this line is a compensation subheader
+                    is_comp_subheader = any(sub in line_lower for sub in compensation_subheaders)
+                    
+                    # End at major sections that are NOT part of compensation
+                    # Check for truly different sections that come after executive compensation
+                    different_sections = [
+                        'director compensation',  # This comes after executive compensation
+                        'security ownership',
+                        'beneficial ownership',
+                        'shareholder proposal',
+                        'shareholder proposals',
+                        'proposal six',  # Proposals start after compensation
+                        'proposal seven',
+                        'proposal eight',
+                        'proposal nine',
+                        'proposal ten',
+                        'audit',
+                        'ratification',
+                        'election of director',
+                    ]
+                    
+                    # Check if this is a different section
+                    # For "Director Compensation", make sure it's a standalone header, not in a table
+                    is_different_section = False
+                    if 'director compensation' in line_lower:
+                        # Only end if it's a clear section header (standalone, short line, not in table)
+                        if (len(line_stripped) < 80 and 
+                            (line_stripped == line_stripped.upper() or 
+                             line_stripped.lower() == 'director compensation')):
+                            # Check context - make sure it's not in a table or list
+                            context_lines = ' '.join(lines[max(0, i-3):i+3]).lower()
+                            if 'table' not in context_lines or 'director compensation' == line_stripped.lower():
+                                is_different_section = True
+                    else:
+                        # For other different sections
+                        is_different_section = any(diff in line_lower for diff in different_sections if diff != 'director compensation')
+                    
+                    if (is_different_section and 
+                        not is_comp_subheader and
+                        len(line_stripped) < 150):
+                        # Make sure it's not just a mention in text
+                        if (line_stripped == line_stripped.upper() or 
+                            line_lower in [d.lower() for d in different_sections]):
+                            # Additional check: make sure we've seen substantial compensation content
+                            # Don't end too early (at least 1000 chars should be extracted)
+                            if i - start_idx > 50:  # At least 50 lines
+                                end_idx = i
+                                break
+                else:
+                    # For other proxy sections, use standard detection
+                    # Major section headers (all caps, short, 2+ words)
+                    if (len(line_stripped) < 100
+                            and line_stripped == line_stripped.upper()
+                            and not line_stripped.startswith('(')
+                            and len(line_stripped.split()) >= 2
+                            and not any(term in line_lower for term in ['table of', 'page', 'exhibit'])):
+                        # Make sure it's not a continuation of current section
+                        if not any(pattern in line_lower for pattern in search_patterns):
+                            end_idx = i
+                            break
             elif is_10k_or_10q:
                 # 10-K/10-Q: end at next Item header (with variations)
                 item_patterns = [
