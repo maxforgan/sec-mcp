@@ -18,6 +18,7 @@ from sec_tables import SECTableExtractor
 from sec_13f import SEC13FClient, format_13f_holdings, format_13f_history
 from sec_8k import SEC8KClient, format_press_releases
 from sec_filing_text import SECFilingTextClient, format_filing_text
+from sec_form4 import SECForm4Client, format_insider_transactions
 from sec_company_search import SECCompanySearchClient, format_company_search_results
 
 
@@ -346,15 +347,14 @@ async def handle_list_tools() -> list[types.Tool]:
         types.Tool(
             name="get-filing-text",
             description=(
-                "Retrieve the full text of a 10-K or 10-Q filing from SEC EDGAR. "
-                "Useful for reading MD&A, footnotes/notes to financial statements, business descriptions, "
-                "risk factors, segment tables, and other narrative disclosure not captured by XBRL.\n\n"
-                "10-K sections: 'item 1'/'business', 'item 1a'/'risk factors', 'item 7'/'mda', "
-                "'item 8'/'financial statements', 'notes'/'footnotes' (Notes to Financial Statements).\n"
-                "10-Q sections: 'item 1'/'financial statements', 'item 2'/'mda', 'item 1a'/'risk factors', "
-                "'notes'/'footnotes' (Notes to Financial Statements).\n\n"
-                "IMPORTANT: Notes/footnotes sections are large (100,000–300,000 chars). "
-                "Always set max_chars=200000 or higher when using section='notes' or section='footnotes'."
+                "Retrieve the full text of a SEC filing with optional section extraction. "
+                "Supports 10-K, 10-Q, DEF 14A (proxy statements), SC 13G, SC 13D, S-1, and other filing types.\n\n"
+                "10-K sections: 'business', 'risk factors', 'mda', 'financial statements', 'notes'/'footnotes'.\n"
+                "10-Q sections: 'financial statements', 'mda', 'risk factors', 'notes'/'footnotes'.\n"
+                "DEF 14A (proxy) sections: 'executive compensation'/'comp', 'directors'/'board', "
+                "'say-on-pay', 'audit', 'proposals', 'ownership', 'related party', 'pay ratio'.\n\n"
+                "IMPORTANT: Notes/footnotes and proxy compensation sections are large. "
+                "Use max_chars=200000 or higher for those sections."
             ),
             inputSchema={
                 "type": "object",
@@ -365,16 +365,23 @@ async def handle_list_tools() -> list[types.Tool]:
                     },
                     "filing_type": {
                         "type": "string",
-                        "description": "Filing type: '10-K' (annual, default) or '10-Q' (quarterly)",
+                        "description": (
+                            "Filing type to retrieve. Common values: "
+                            "'10-K' (annual report, default), '10-Q' (quarterly), "
+                            "'DEF 14A' (proxy statement — exec comp, director elections), "
+                            "'SC 13G' or 'SC 13D' (large shareholder >5% ownership filings), "
+                            "'S-1' (IPO registration statement)."
+                        ),
                         "default": "10-K",
                     },
                     "section": {
                         "type": "string",
                         "description": (
-                            "Section to extract. Options: 'mda', 'item 7', 'risk factors', 'item 1a', "
-                            "'business', 'item 1', 'financial statements', 'item 8', "
-                            "'notes' or 'footnotes' (Notes to Financial Statements — use max_chars=200000+). "
-                            "Omit to return the full filing text (very large — always specify a section)."
+                            "Named section to extract. "
+                            "For DEF 14A: 'executive compensation', 'comp', 'directors', 'board', "
+                            "'say-on-pay', 'audit', 'proposals', 'ownership', 'related party', 'pay ratio'. "
+                            "For 10-K: 'mda', 'risk factors', 'business', 'notes', 'financial statements'. "
+                            "Omit to return the full filing (very large — always specify a section)."
                         ),
                     },
                     "count": {
@@ -386,10 +393,49 @@ async def handle_list_tools() -> list[types.Tool]:
                         "type": "number",
                         "description": (
                             "Maximum characters to return (default: 100000). "
-                            "MD&A is typically 20,000–80,000 chars. "
-                            "Notes/footnotes are typically 100,000–300,000 chars — use 200000 or higher."
+                            "Executive compensation tables and footnotes can be 100,000–300,000 chars — use 200000+."
                         ),
                         "default": 100000,
+                    },
+                },
+                "required": ["ticker"],
+            },
+        ),
+        types.Tool(
+            name="get-insider-transactions",
+            description=(
+                "Retrieve recent Form 4 insider transactions (purchases, sales, grants, option exercises) "
+                "filed by directors, officers, and 10%+ shareholders of a public company.\n\n"
+                "Transaction types:\n"
+                "  P = Open-market Purchase (bullish signal)\n"
+                "  S = Open-market Sale\n"
+                "  A = Grant/Award (RSUs, options granted)\n"
+                "  M = Option Exercise\n"
+                "  F = Tax withholding (shares surrendered for taxes — not an open-market sale)\n\n"
+                "Use transaction_types=['P','S'] to filter to only open-market buys and sells, "
+                "which are the most meaningful signals of insider conviction."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "Stock ticker symbol (e.g., AAPL, MSFT, TSLA)",
+                    },
+                    "count": {
+                        "type": "number",
+                        "description": "Number of Form 4 filings to process (default: 40; each filing may have multiple transactions)",
+                        "default": 40,
+                    },
+                    "transaction_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter to specific transaction codes: 'P' (purchase), 'S' (sale), 'A' (grant), 'M' (exercise), 'F' (tax withholding). Omit to return all types.",
+                    },
+                    "show_derivatives": {
+                        "type": "boolean",
+                        "description": "Include derivative transactions (RSUs, options) in output (default: true). Set false to show only direct stock transactions.",
+                        "default": True,
                     },
                 },
                 "required": ["ticker"],
@@ -578,6 +624,23 @@ async def handle_call_tool(
                     text=output
                 )
             ]
+
+        elif name == "get-insider-transactions":
+            ticker = arguments.get("ticker")
+            if not ticker:
+                raise ValueError("Missing required argument: ticker")
+            count = int(arguments.get("count", 40))
+            transaction_types = arguments.get("transaction_types") or None
+            show_derivatives = arguments.get("show_derivatives", True)
+
+            client = SECForm4Client()
+            data = await asyncio.to_thread(
+                client.get_insider_transactions, ticker, count, transaction_types
+            )
+            output = format_insider_transactions(
+                data, show_derivatives=show_derivatives, max_rows=100
+            )
+            return [types.TextContent(type="text", text=output)]
 
         elif name == "search-company":
             query = arguments.get("name")

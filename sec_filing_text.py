@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 SEC Full-Text Filing Retriever
-Fetches and returns plain text of 10-K and 10-Q filings from EDGAR.
+Fetches and returns plain text of 10-K, 10-Q, DEF 14A, and other filings from EDGAR.
 Useful for MD&A, risk factors, business descriptions, segment tables,
-footnotes, and other narrative disclosure not captured by XBRL.
+footnotes, executive compensation, and other narrative disclosure not captured by XBRL.
 """
 
 import re
@@ -45,6 +45,69 @@ _10Q_SECTION_ALIASES = {
     'notes': 'notes to',
     'footnotes': 'notes to',
     'notes to financial statements': 'notes to',
+}
+
+# DEF 14A (proxy statement) section aliases
+# Proxy sections are typically headed by descriptive titles, not "Item N" patterns
+_DEF14A_SECTION_ALIASES = {
+    # Director elections
+    'directors': 'election of director',
+    'board': 'board of director',
+    'election': 'election of director',
+    'director nominees': 'election of director',
+    # Executive compensation (the CD&A and summary tables)
+    'executive compensation': 'executive compensation',
+    'compensation': 'executive compensation',
+    'comp': 'executive compensation',
+    "cd&a": 'compensation discussion',
+    'compensation discussion': 'compensation discussion',
+    'named executive': 'named executive',
+    'neo': 'named executive',
+    'summary compensation': 'summary compensation',
+    # Say-on-pay advisory vote
+    'say on pay': 'say-on-pay',
+    'say-on-pay': 'say-on-pay',
+    'advisory vote': 'advisory vote',
+    # Auditor / audit committee
+    'audit': 'audit committee',
+    'auditor': 'ratification',
+    'ratification': 'ratification',
+    # Shareholder proposals
+    'shareholder proposals': 'shareholder proposal',
+    'proposals': 'shareholder proposal',
+    'stockholder proposals': 'shareholder proposal',
+    # Ownership / security holdings
+    'ownership': 'beneficial ownership',
+    'beneficial ownership': 'beneficial ownership',
+    'stock ownership': 'beneficial ownership',
+    'security ownership': 'security ownership',
+    # Related-party transactions
+    'related party': 'related party',
+    'related parties': 'related party',
+    'transactions with': 'transactions with',
+    # Pay ratio
+    'pay ratio': 'ceo pay ratio',
+    'ceo pay ratio': 'ceo pay ratio',
+    # Equity awards / outstanding option table
+    'equity awards': 'outstanding equity',
+    'option exercises': 'option exercise',
+    'pension': 'pension benefit',
+    # Meeting logistics
+    'meeting': 'annual meeting',
+    'proxy summary': 'proxy summary',
+    'proxy statement': 'proxy statement',
+}
+
+# Map filing_type string → alias dict and end-of-section pattern
+_ALIAS_MAP = {
+    '10-K': _10K_SECTION_ALIASES,
+    '10-Q': _10Q_SECTION_ALIASES,
+    'DEF 14A': _DEF14A_SECTION_ALIASES,
+    # Treat amended versions the same as originals
+    '10-K/A': _10K_SECTION_ALIASES,
+    '10-Q/A': _10Q_SECTION_ALIASES,
+    'DEFA14A': _DEF14A_SECTION_ALIASES,
+    'DEF14A': _DEF14A_SECTION_ALIASES,
 }
 
 
@@ -158,21 +221,21 @@ class SECFilingTextClient:
         """
         Extract a named section from a filing's plain text.
 
-        section can be a canonical name like 'item 7', or an alias like 'mda',
-        'risk factors', 'business', 'financial statements'.
+        Works for 10-K, 10-Q, and DEF 14A proxy statements.
+        section can be a canonical name or any registered alias.
         """
         section_lower = section.lower().strip()
 
-        aliases = _10K_SECTION_ALIASES if filing_type == '10-K' else _10Q_SECTION_ALIASES
+        aliases = _ALIAS_MAP.get(filing_type, _10K_SECTION_ALIASES)
         normalized = aliases.get(section_lower, section_lower)
 
         lines = text.split('\n')
         start_idx = None
 
-        # Find the start: a short line containing the normalized section identifier
+        # Find the start: a short line (header-like) containing the section identifier
         for i, line in enumerate(lines):
             line_stripped = line.strip()
-            if not line_stripped or len(line_stripped) > 120:
+            if not line_stripped or len(line_stripped) > 150:
                 continue
             if normalized in line_stripped.lower():
                 start_idx = i
@@ -181,15 +244,34 @@ class SECFilingTextClient:
         if start_idx is None:
             return f"[Section '{section}' not found. Returning full text.]\n\n{text}"
 
-        # Find the next section header as the end boundary
+        # Find the end boundary — varies by filing type
         end_idx = None
+        is_proxy = filing_type in ('DEF 14A', 'DEFA14A', 'DEF14A')
+
         for i in range(start_idx + 3, len(lines)):
             line_stripped = lines[i].strip()
-            if not line_stripped or len(line_stripped) > 120:
+            if not line_stripped or len(line_stripped) > 150:
                 continue
-            # Matches patterns like "Item 8" / "ITEM 8." / "Item 8A."
-            if re.match(r'^item\s+\d+[a-z]?\.?\s*', line_stripped.lower()):
-                if i > start_idx + 5:
+            if i <= start_idx + 5:
+                continue
+
+            if is_proxy:
+                # Proxy sections are separated by PROPOSAL N or standalone
+                # section headers (all-caps or title-case, short, no period)
+                if re.match(r'^proposal\s+\d+', line_stripped.lower()):
+                    end_idx = i
+                    break
+                # Broad header detection for proxy: short all-caps or mixed-case heading
+                # that looks like a new major section
+                if (len(line_stripped) < 80
+                        and line_stripped == line_stripped.upper()
+                        and not line_stripped.startswith('(')
+                        and len(line_stripped.split()) >= 2):
+                    end_idx = i
+                    break
+            else:
+                # 10-K / 10-Q: end at next "Item N" header
+                if re.match(r'^item\s+\d+[a-z]?\.?\s*', line_stripped.lower()):
                     end_idx = i
                     break
 
