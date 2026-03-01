@@ -165,7 +165,7 @@ class SECFilingTextClient:
         # Try JSON index first
         index_url = f"{self.BASE_URL}/Archives/edgar/data/{cik_int}/{accession_nodash}/{accession}-index.json"
         try:
-            resp = requests.get(index_url, headers=self.headers, timeout=10)
+            resp = requests.get(index_url, headers=self.headers, timeout=30)
             if resp.status_code == 200:
                 items = resp.json().get('directory', {}).get('item', [])
                 for item in items:
@@ -179,7 +179,7 @@ class SECFilingTextClient:
         # Fall back to HTML index
         index_url = f"{self.BASE_URL}/Archives/edgar/data/{cik_int}/{accession_nodash}/{accession}-index.htm"
         try:
-            resp = requests.get(index_url, headers=self.headers, timeout=10)
+            resp = requests.get(index_url, headers=self.headers, timeout=30)
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, 'html.parser')
                 table = soup.find('table', class_='tableFile')
@@ -204,7 +204,7 @@ class SECFilingTextClient:
 
     def fetch_document_text(self, url: str) -> str:
         """Fetch a filing document URL and return plain text."""
-        resp = requests.get(url, headers=self.headers, timeout=30)
+        resp = requests.get(url, headers=self.headers, timeout=60)
         resp.raise_for_status()
 
         content_type = resp.headers.get('Content-Type', '')
@@ -236,13 +236,21 @@ class SECFilingTextClient:
         start_idx = None
 
         # Find the start: a short line (header-like) containing the section identifier
+        # For proxy statements, also check for common variations
         for i, line in enumerate(lines):
             line_stripped = line.strip()
             if not line_stripped or len(line_stripped) > 150:
                 continue
-            if normalized in line_stripped.lower():
+            line_lower = line_stripped.lower()
+            if normalized in line_lower:
                 start_idx = i
                 break
+            # Additional checks for executive compensation in proxy statements
+            if is_proxy and section_lower in ('executive compensation', 'compensation', 'comp'):
+                if any(term in line_lower for term in ['executive compensation', 'compensation discussion', 
+                                                       'named executive officer', 'summary compensation table']):
+                    start_idx = i
+                    break
 
         if start_idx is None:
             return f"[Section '{section}' not found. Returning full text.]\n\n{text}"
@@ -329,8 +337,12 @@ class SECFilingTextClient:
                         entry['text'] = self.extract_section(full_text, section, filing_type)
                     else:
                         entry['text'] = full_text
+                except requests.exceptions.Timeout:
+                    entry['text'] = f"[Error: Timeout while fetching document. The document may be very large. Try reducing count or max_chars.]"
+                except requests.exceptions.RequestException as e:
+                    entry['text'] = f"[Error fetching document: {type(e).__name__}: {str(e)}]"
                 except Exception as e:
-                    entry['text'] = f"[Error fetching document: {e}]"
+                    entry['text'] = f"[Error processing document: {type(e).__name__}: {str(e)}]"
             else:
                 entry['text'] = f"[Could not locate {filing_type} document in filing index]"
 

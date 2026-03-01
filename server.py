@@ -759,10 +759,12 @@ async def handle_call_tool(
             )
         ]
     except Exception as e:
+        import traceback
+        error_msg = f"Error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
         return [
             types.TextContent(
                 type="text",
-                text=f"Error: {str(e)}"
+                text=error_msg
             )
         ]
 
