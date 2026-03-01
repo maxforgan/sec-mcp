@@ -108,6 +108,9 @@ _ALIAS_MAP = {
     '10-Q/A': _10Q_SECTION_ALIASES,
     'DEFA14A': _DEF14A_SECTION_ALIASES,
     'DEF14A': _DEF14A_SECTION_ALIASES,
+    # S-1 uses same section aliases as 10-K for risk factors and business
+    'S-1': _10K_SECTION_ALIASES,
+    'S-1/A': _10K_SECTION_ALIASES,
 }
 
 

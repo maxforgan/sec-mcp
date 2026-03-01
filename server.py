@@ -19,6 +19,8 @@ from sec_13f import SEC13FClient, format_13f_holdings, format_13f_history
 from sec_8k import SEC8KClient, format_press_releases
 from sec_filing_text import SECFilingTextClient, format_filing_text
 from sec_form4 import SECForm4Client, format_insider_transactions
+from sec_13d_13g import SEC13D13GClient, format_ownership_disclosures
+from sec_form144 import SECForm144Client, format_form144_notifications
 from sec_company_search import SECCompanySearchClient, format_company_search_results
 
 
@@ -352,7 +354,8 @@ async def handle_list_tools() -> list[types.Tool]:
                 "10-K sections: 'business', 'risk factors', 'mda', 'financial statements', 'notes'/'footnotes'.\n"
                 "10-Q sections: 'financial statements', 'mda', 'risk factors', 'notes'/'footnotes'.\n"
                 "DEF 14A (proxy) sections: 'executive compensation'/'comp', 'directors'/'board', "
-                "'say-on-pay', 'audit', 'proposals', 'ownership', 'related party', 'pay ratio'.\n\n"
+                "'say-on-pay', 'audit', 'proposals', 'ownership', 'related party', 'pay ratio'.\n"
+                "S-1 sections: 'business', 'risk factors' (same as 10-K).\n\n"
                 "IMPORTANT: Notes/footnotes and proxy compensation sections are large. "
                 "Use max_chars=200000 or higher for those sections."
             ),
@@ -370,7 +373,7 @@ async def handle_list_tools() -> list[types.Tool]:
                             "'10-K' (annual report, default), '10-Q' (quarterly), "
                             "'DEF 14A' (proxy statement — exec comp, director elections), "
                             "'SC 13G' or 'SC 13D' (large shareholder >5% ownership filings), "
-                            "'S-1' (IPO registration statement)."
+                            "'S-1' (IPO registration statement — supports 'business' and 'risk factors' sections)."
                         ),
                         "default": "10-K",
                     },
@@ -381,6 +384,7 @@ async def handle_list_tools() -> list[types.Tool]:
                             "For DEF 14A: 'executive compensation', 'comp', 'directors', 'board', "
                             "'say-on-pay', 'audit', 'proposals', 'ownership', 'related party', 'pay ratio'. "
                             "For 10-K: 'mda', 'risk factors', 'business', 'notes', 'financial statements'. "
+                            "For S-1: 'business', 'risk factors' (same as 10-K). "
                             "Omit to return the full filing (very large — always specify a section)."
                         ),
                     },
@@ -436,6 +440,62 @@ async def handle_list_tools() -> list[types.Tool]:
                         "type": "boolean",
                         "description": "Include derivative transactions (RSUs, options) in output (default: true). Set false to show only direct stock transactions.",
                         "default": True,
+                    },
+                },
+                "required": ["ticker"],
+            },
+        ),
+        types.Tool(
+            name="get-ownership-disclosures",
+            description=(
+                "Retrieve structured SC 13D (activist) and SC 13G (passive) ownership disclosures "
+                "for large shareholders (>5% stake). Returns ownership percentages, shares owned, "
+                "filing dates, and owner information. SC 13D filings also include purpose of transaction.\n\n"
+                "Use this to track activist investors, passive large holders, and ownership changes over time."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "Stock ticker symbol (e.g., AAPL, MSFT, TSLA)",
+                    },
+                    "filing_type": {
+                        "type": "string",
+                        "description": (
+                            "Filing type: 'SC 13G' (passive holder, default) or 'SC 13D' (activist). "
+                            "SC 13D indicates potential activist intent; SC 13G is passive investment."
+                        ),
+                        "default": "SC 13G",
+                    },
+                    "count": {
+                        "type": "number",
+                        "description": "Number of filings to retrieve (default: 20)",
+                        "default": 20,
+                    },
+                },
+                "required": ["ticker"],
+            },
+        ),
+        types.Tool(
+            name="get-form144-notifications",
+            description=(
+                "Retrieve Form 144 pre-sales notifications filed by insiders before selling restricted securities. "
+                "Returns proposed sale information including shares, price, sale date, and insider details.\n\n"
+                "Form 144 is filed when insiders plan to sell restricted or control securities. "
+                "This provides early visibility into potential insider selling activity."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "Stock ticker symbol (e.g., AAPL, MSFT, TSLA)",
+                    },
+                    "count": {
+                        "type": "number",
+                        "description": "Number of Form 144 filings to process (default: 40; each filing may contain multiple proposed sales)",
+                        "default": 40,
                     },
                 },
                 "required": ["ticker"],
@@ -640,6 +700,33 @@ async def handle_call_tool(
             output = format_insider_transactions(
                 data, show_derivatives=show_derivatives, max_rows=100
             )
+            return [types.TextContent(type="text", text=output)]
+
+        elif name == "get-ownership-disclosures":
+            ticker = arguments.get("ticker")
+            if not ticker:
+                raise ValueError("Missing required argument: ticker")
+            filing_type = arguments.get("filing_type", "SC 13G")
+            count = int(arguments.get("count", 20))
+
+            client = SEC13D13GClient()
+            data = await asyncio.to_thread(
+                client.get_ownership_disclosures, ticker, filing_type, count
+            )
+            output = format_ownership_disclosures(data, max_rows=100)
+            return [types.TextContent(type="text", text=output)]
+
+        elif name == "get-form144-notifications":
+            ticker = arguments.get("ticker")
+            if not ticker:
+                raise ValueError("Missing required argument: ticker")
+            count = int(arguments.get("count", 40))
+
+            client = SECForm144Client()
+            data = await asyncio.to_thread(
+                client.get_form144_notifications, ticker, count
+            )
+            output = format_form144_notifications(data, max_rows=100)
             return [types.TextContent(type="text", text=output)]
 
         elif name == "search-company":
