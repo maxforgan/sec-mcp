@@ -224,65 +224,214 @@ class SECFilingTextClient:
         """
         Extract a named section from a filing's plain text.
 
-        Works for 10-K, 10-Q, and DEF 14A proxy statements.
+        Works for 10-K, 10-Q, DEF 14A proxy statements, S-1, and other filing types.
         section can be a canonical name or any registered alias.
         """
         section_lower = section.lower().strip()
-
         aliases = _ALIAS_MAP.get(filing_type, _10K_SECTION_ALIASES)
         normalized = aliases.get(section_lower, section_lower)
+        is_proxy = filing_type in ('DEF 14A', 'DEFA14A', 'DEF14A')
+        is_10k_or_10q = filing_type in ('10-K', '10-Q', '10-K/A', '10-Q/A', 'S-1', 'S-1/A')
 
         lines = text.split('\n')
         start_idx = None
 
-        # Find the start: a short line (header-like) containing the section identifier
-        # For proxy statements, also check for common variations
-        for i, line in enumerate(lines):
-            line_stripped = line.strip()
-            if not line_stripped or len(line_stripped) > 150:
-                continue
-            line_lower = line_stripped.lower()
-            if normalized in line_lower:
-                start_idx = i
-                break
-            # Additional checks for executive compensation in proxy statements
-            if is_proxy and section_lower in ('executive compensation', 'compensation', 'comp'):
-                if any(term in line_lower for term in ['executive compensation', 'compensation discussion', 
-                                                       'named executive officer', 'summary compensation table']):
-                    start_idx = i
+        # Build search patterns for better matching
+        search_patterns = [normalized]
+        
+        # For Item-based sections (10-K, 10-Q, S-1), add pattern variations
+        if is_10k_or_10q and normalized.startswith('item '):
+            item_num = normalized.replace('item ', '').strip()
+            # Patterns: "Item 1", "ITEM 1", "Item 1.", "Item 1 -", "Item 1:", etc.
+            search_patterns.extend([
+                f'item {item_num}',
+                f'item {item_num}.',
+                f'item {item_num}:',
+                f'item {item_num} -',
+                f'item {item_num}—',  # em dash
+                f'item {item_num}–',  # en dash
+            ])
+        
+        # For proxy sections, add common variations
+        if is_proxy:
+            if section_lower in ('executive compensation', 'compensation', 'comp'):
+                search_patterns.extend([
+                    'executive compensation',
+                    'compensation discussion',
+                    'compensation discussion and analysis',
+                    'cd&a',
+                    'named executive officer',
+                    'summary compensation table',
+                    'compensation of executives',
+                ])
+            elif section_lower in ('risk factors', 'risk'):
+                search_patterns.extend(['risk factors', 'risk factor', 'risks'])
+            elif section_lower in ('business',):
+                search_patterns.extend(['business', 'description of business', 'business overview'])
+
+        # Special handling for notes/footnotes (they appear within financial statements)
+        if normalized == 'notes to':
+            # Look for "Notes to Financial Statements" or similar
+            notes_patterns = [
+                'notes to financial statements',
+                'notes to consolidated financial statements',
+                'notes to the financial statements',
+                'footnotes',
+                'notes',
+            ]
+            for i, line in enumerate(lines):
+                line_lower = line.strip().lower()
+                if any(pattern in line_lower for pattern in notes_patterns):
+                    # Make sure it's not in table of contents
+                    if 'table of contents' not in ' '.join(lines[max(0, i-5):i]).lower():
+                        start_idx = i
+                        break
+
+        # Enhanced start detection with multiple strategies
+        if start_idx is None:
+            for strategy in ['exact_match', 'fuzzy_match', 'context_match']:
+                for i, line in enumerate(lines):
+                    line_stripped = line.strip()
+                    if not line_stripped:
+                        continue
+                    
+                    line_lower = line_stripped.lower()
+                    
+                    # Skip table of contents
+                    if 'table of contents' in line_lower and i < 50:
+                        continue
+                    
+                    # Strategy 1: Exact match in line
+                    if strategy == 'exact_match':
+                        if len(line_stripped) <= 150:
+                            for pattern in search_patterns:
+                                if pattern in line_lower:
+                                    # Additional validation: not in TOC
+                                    if i > 50 or 'table of contents' not in ' '.join(lines[max(0, i-10):i+1]).lower():
+                                        start_idx = i
+                                        break
+                            if start_idx is not None:
+                                break
+                    
+                    # Strategy 2: Fuzzy match (handle variations, punctuation)
+                    elif strategy == 'fuzzy_match' and start_idx is None:
+                        if len(line_stripped) <= 200:
+                            # Remove punctuation and normalize
+                            line_normalized = re.sub(r'[^\w\s]', ' ', line_lower)
+                            for pattern in search_patterns:
+                                pattern_normalized = re.sub(r'[^\w\s]', ' ', pattern)
+                                # Check if pattern words appear in order
+                                pattern_words = pattern_normalized.split()
+                                line_words = line_normalized.split()
+                                if len(pattern_words) > 0:
+                                    # Check if all pattern words appear in line
+                                    if all(any(pw in lw or lw in pw for lw in line_words) 
+                                           for pw in pattern_words if len(pw) > 2):
+                                        if i > 50 or 'table of contents' not in ' '.join(lines[max(0, i-10):i+1]).lower():
+                                            start_idx = i
+                                            break
+                            if start_idx is not None:
+                                break
+                    
+                    # Strategy 3: Context match (look at current + next line)
+                    elif strategy == 'context_match' and start_idx is None:
+                        if i < len(lines) - 1:
+                            next_line = lines[i + 1].strip() if i + 1 < len(lines) else ''
+                            combined = f"{line_stripped} {next_line}".lower()
+                            if len(combined) <= 250:
+                                for pattern in search_patterns:
+                                    if pattern in combined:
+                                        if i > 50 or 'table of contents' not in ' '.join(lines[max(0, i-10):i+2]).lower():
+                                            start_idx = i
+                                            break
+                            if start_idx is not None:
+                                break
+                
+                if start_idx is not None:
                     break
 
         if start_idx is None:
             return f"[Section '{section}' not found. Returning full text.]\n\n{text}"
 
-        # Find the end boundary — varies by filing type
+        # Enhanced end detection
         end_idx = None
-        is_proxy = filing_type in ('DEF 14A', 'DEFA14A', 'DEF14A')
+        min_lines_after_start = 10  # Minimum lines to scan before considering end
 
-        for i in range(start_idx + 3, len(lines)):
+        for i in range(start_idx + min_lines_after_start, len(lines)):
             line_stripped = lines[i].strip()
-            if not line_stripped or len(line_stripped) > 150:
+            if not line_stripped:
                 continue
-            if i <= start_idx + 5:
-                continue
-
+            
+            line_lower = line_stripped.lower()
+            
             if is_proxy:
-                # Proxy sections are separated by PROPOSAL N or standalone
-                # section headers (all-caps or title-case, short, no period)
-                if re.match(r'^proposal\s+\d+', line_stripped.lower()):
+                # Proxy sections: end at PROPOSAL N, or major section headers
+                if re.match(r'^proposal\s+\d+', line_lower):
                     end_idx = i
                     break
-                # Broad header detection for proxy: short all-caps or mixed-case heading
-                # that looks like a new major section
-                if (len(line_stripped) < 80
+                # Major section headers (all caps, short, 2+ words)
+                if (len(line_stripped) < 100
                         and line_stripped == line_stripped.upper()
                         and not line_stripped.startswith('(')
-                        and len(line_stripped.split()) >= 2):
-                    end_idx = i
+                        and len(line_stripped.split()) >= 2
+                        and not any(term in line_lower for term in ['table of', 'page', 'exhibit'])):
+                    # Make sure it's not a continuation of current section
+                    if not any(pattern in line_lower for pattern in search_patterns):
+                        end_idx = i
+                        break
+            elif is_10k_or_10q:
+                # 10-K/10-Q: end at next Item header (with variations)
+                item_patterns = [
+                    r'^item\s+(\d+)([a-z])?\.?\s*',
+                    r'^item\s+(\d+)([a-z])?:\s*',
+                    r'^item\s+(\d+)([a-z])?\s*[-—–]',
+                ]
+                
+                # Extract current item number and sub-item from normalized pattern
+                current_item_num = None
+                current_sub_item = None
+                if normalized.startswith('item '):
+                    match = re.search(r'item\s+(\d+)([a-z])?', normalized)
+                    if match:
+                        current_item_num = match.group(1)
+                        current_sub_item = match.group(2) if match.lastindex >= 2 else None
+                
+                for pattern in item_patterns:
+                    match = re.match(pattern, line_lower)
+                    if match:
+                        found_item_num = match.group(1)
+                        found_sub_item = match.group(2) if match.lastindex >= 2 else None
+                        
+                        # End if we find a different main item number
+                        # Item 1A should end at Item 2, not Item 1B
+                        if current_item_num:
+                            try:
+                                current_num = int(current_item_num)
+                                found_num = int(found_item_num)
+                                # End if we hit a different main item (1 -> 2, not 1A -> 1B)
+                                if found_num > current_num:
+                                    end_idx = i
+                                    break
+                                # Also end if same number but no sub-item and we had one
+                                # (e.g., Item 1A ends at Item 1 if it appears, though rare)
+                                elif found_num == current_num and not found_sub_item and current_sub_item:
+                                    # But only if it's clearly a new section, not continuation
+                                    # Check if line looks like a header
+                                    if len(line_stripped) < 100 and not line_stripped.startswith('('):
+                                        end_idx = i
+                                        break
+                            except ValueError:
+                                pass
+                        else:
+                            # If we don't have a current item number, end at any item
+                            end_idx = i
+                            break
+                
+                if end_idx is not None:
                     break
-            else:
-                # 10-K / 10-Q: end at next "Item N" header
-                if re.match(r'^item\s+\d+[a-z]?\.?\s*', line_stripped.lower()):
+                
+                # Also end at "PART" headers (for S-1 and some 10-Ks)
+                if re.match(r'^part\s+[ivx]+', line_lower):
                     end_idx = i
                     break
 
