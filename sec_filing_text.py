@@ -184,26 +184,51 @@ class SECFilingTextClient:
                 soup = BeautifulSoup(resp.text, 'html.parser')
                 table = soup.find('table', class_='tableFile')
                 if table:
+                    candidates = []
                     for row in table.find_all('tr')[1:]:
                         cols = row.find_all('td')
                         if len(cols) < 4:
                             continue
                         doc_type = cols[3].text.strip()
-                        if doc_type.upper() == filing_type:
-                            link = cols[2].find('a')
-                            if link:
-                                href = link['href']
-                                # Strip iXBRL viewer wrapper
-                                if '/ix?doc=' in href:
-                                    href = href.split('/ix?doc=')[1]
-                                return self.BASE_URL + href
+                        if doc_type.upper() != filing_type:
+                            continue
+                        link = cols[2].find('a')
+                        if not link or not link.get('href'):
+                            continue
+                        href = link['href']
+                        if '/ix?doc=' in href:
+                            href = href.split('/ix?doc=')[1]
+                        # Prefer main document: for DEF 14A, use largest by size (col 4) to avoid index/wrapper
+                        size = 0
+                        if len(cols) >= 5 and filing_type.upper() in ('DEF 14A', 'DEFA14A', 'DEF14A'):
+                            try:
+                                size = int(cols[4].text.strip().replace(',', ''))
+                            except (ValueError, AttributeError):
+                                pass
+                        candidates.append((size, self.BASE_URL + href))
+                    if candidates:
+                        # Return the document with largest size (main proxy body), else first
+                        candidates.sort(key=lambda x: x[0], reverse=True)
+                        return candidates[0][1]
         except Exception:
             pass
 
         return None
 
-    def fetch_document_text(self, url: str) -> str:
-        """Fetch a filing document URL and return plain text."""
+    def _table_to_text(self, table) -> str:
+        """Convert a single HTML table to readable text with pipe-separated columns."""
+        rows = []
+        for tr in table.find_all('tr'):
+            cells = []
+            for cell in tr.find_all(['th', 'td']):
+                cells.append(cell.get_text(separator=' ', strip=True))
+            if cells:
+                rows.append(' | '.join(cells))
+        return '\n'.join(rows) if rows else ''
+
+    def fetch_document_text(self, url: str, preserve_tables: bool = True) -> str:
+        """Fetch a filing document URL and return plain text. When preserve_tables is True,
+        HTML tables are rendered as pipe-separated rows so compensation and other tables stay readable."""
         resp = requests.get(url, headers=self.headers, timeout=60)
         resp.raise_for_status()
 
@@ -212,6 +237,12 @@ class SECFilingTextClient:
             soup = BeautifulSoup(resp.text, 'html.parser')
             for tag in soup(['script', 'style', 'head']):
                 tag.decompose()
+            if preserve_tables:
+                for table in soup.find_all('table'):
+                    table_text = self._table_to_text(table)
+                    if table_text:
+                        table.insert_before(soup.new_string('\n\n' + table_text + '\n\n'))
+                        table.decompose()
             text = soup.get_text(separator='\n', strip=True)
         else:
             text = resp.text
@@ -289,26 +320,42 @@ class SECFilingTextClient:
                         break
 
         # Enhanced start detection with multiple strategies
-        # For executive compensation in proxy, prioritize the full section header
+        # For executive compensation in proxy, prioritize the full section header and skip TOC
         if is_proxy and section_lower in ('executive compensation', 'compensation', 'comp'):
-            # First, try to find the full section header
+            def looks_like_toc_entry(line: str) -> bool:
+                """TOC lines often end with page number (e.g. ' | 46' or ' | | 46')."""
+                stripped = line.strip()
+                if not stripped:
+                    return True
+                return bool(re.search(r'\|\s*\d+\s*$', stripped)) or re.search(r'\b\d{1,3}\s*$', stripped)
+
+            candidate_starts = []
             for i, line in enumerate(lines):
                 line_stripped = line.strip()
                 if not line_stripped:
                     continue
                 line_lower = line_stripped.lower()
-                # Look for the full header "Executive Compensation, Including Compensation Discussion and Analysis"
+                if 'proposal' in line_lower and 'executive compensation, including' not in line_lower:
+                    continue
+                if looks_like_toc_entry(line_stripped):
+                    continue
                 if 'executive compensation, including compensation discussion' in line_lower:
-                    # Make sure it's not in a proposal
-                    if 'proposal' not in line_lower:
-                        start_idx = i
-                        break
-                # Also check for standalone "Executive Compensation" header (not in proposal)
-                elif (line_lower == 'executive compensation' or 
-                      line_lower.startswith('executive compensation') and 
-                      'proposal' not in ' '.join(lines[max(0, i-3):i+1]).lower()):
-                    start_idx = i
+                    candidate_starts.append((i, True))
+                elif (line_lower == 'executive compensation' or
+                      (line_lower.startswith('executive compensation') and len(line_stripped) < 80)):
+                    candidate_starts.append((i, False))
+            # Prefer start where *following* lines (not the header itself) contain section body
+            for idx, _ in candidate_starts:
+                following = '\n'.join(lines[idx + 1:min(idx + 55, len(lines))]).lower()
+                if any(m in following for m in (
+                    'summary compensation table', 'summary compensation',
+                    'named executive officer', 'compensation discussion and analysis',
+                    'cd&a', 'compensation of executives', 'grants of plan-based'
+                )):
+                    start_idx = idx
                     break
+            if start_idx is None and candidate_starts:
+                start_idx = candidate_starts[0][0]
 
         # Enhanced start detection with multiple strategies
         if start_idx is None:
@@ -441,20 +488,36 @@ class SECFilingTextClient:
                     ]
                     
                     # Check if this is a different section
-                    # For "Director Compensation", make sure it's a standalone header, not in a table
-                    is_different_section = False
-                    if 'director compensation' in line_lower:
+                    # Skip TOC lines (e.g. "Director Compensation | | 67") that appear inside the section
+                    def _toc_line(s: str) -> bool:
+                        return bool(re.search(r'\|\s*\d+\s*$', s.strip()) or re.search(r'\b\d{1,3}\s*$', s.strip()))
+                    if _toc_line(line_stripped):
+                        is_different_section = False
+                    elif 'director compensation' in line_lower:
                         # Only end if it's a clear section header (standalone, short line, not in table)
                         if (len(line_stripped) < 80 and 
                             (line_stripped == line_stripped.upper() or 
                              line_stripped.lower() == 'director compensation')):
-                            # Check context - make sure it's not in a table or list
                             context_lines = ' '.join(lines[max(0, i-3):i+3]).lower()
                             if 'table' not in context_lines or 'director compensation' == line_stripped.lower():
                                 is_different_section = True
+                        else:
+                            is_different_section = False
+                    elif 'security ownership' in line_lower or 'beneficial ownership' in line_lower:
+                        is_different_section = not _toc_line(line_stripped) and len(line_stripped) < 100
+                    elif 'audit' in line_lower:
+                        # Don't end at committee headers or fee tables; only at audit ratification proposal
+                        is_different_section = ('oversight' not in line_lower and 'risk' not in line_lower and
+                                                len(line_stripped) < 60 and
+                                                ('ratification' in line_lower or 'proposal' in line_lower))
                     else:
-                        # For other different sections
-                        is_different_section = any(diff in line_lower for diff in different_sections if diff != 'director compensation')
+                        # For "election of director": only end at actual proposal header, not TOC or "Director Nominees and..."
+                        if 'election of director' in line_lower or 'director nominee' in line_lower:
+                            is_different_section = (not _toc_line(line_stripped) and
+                                                    bool(re.match(r'^proposal\s+\w+.*election', line_lower)))
+                        else:
+                            skip = ('director compensation', 'security ownership', 'beneficial ownership', 'audit')
+                            is_different_section = any(diff in line_lower for diff in different_sections if diff not in skip)
                     
                     if (is_different_section and 
                         not is_comp_subheader and
@@ -462,9 +525,17 @@ class SECFilingTextClient:
                         # Make sure it's not just a mention in text
                         if (line_stripped == line_stripped.upper() or 
                             line_lower in [d.lower() for d in different_sections]):
-                            # Additional check: make sure we've seen substantial compensation content
-                            # Don't end too early (at least 1000 chars should be extracted)
-                            if i - start_idx > 50:  # At least 50 lines
+                            # Require evidence that we've passed the actual compensation tables (not just narrative)
+                            # before ending at Director Compensation / Related Party / Ratification
+                            content_so_far = '\n'.join(lines[start_idx:i]).lower()
+                            table_evidence = any(phrase in content_so_far for phrase in [
+                                'summary compensation table', 'grants of plan-based awards',
+                                'outstanding equity awards at', 'option exercises and stock vested'
+                            ])
+                            sections_after_tables = ('director compensation', 'related party', 'related parties',
+                                                     'transactions with', 'ratification')
+                            line_in_sections_after_tables = any(s in line_lower for s in sections_after_tables)
+                            if i - start_idx > 50 and (table_evidence or not line_in_sections_after_tables):
                                 end_idx = i
                                 break
                 else:

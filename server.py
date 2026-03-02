@@ -356,8 +356,7 @@ async def handle_list_tools() -> list[types.Tool]:
                 "DEF 14A (proxy) sections: 'executive compensation'/'comp', 'directors'/'board', "
                 "'say-on-pay', 'audit', 'proposals', 'ownership', 'related party', 'pay ratio'.\n"
                 "S-1 sections: 'business', 'risk factors' (same as 10-K).\n\n"
-                "IMPORTANT: Notes/footnotes and proxy compensation sections are large. "
-                "Use max_chars=200000 or higher for those sections."
+                "IMPORTANT: For DEF 14A 'executive compensation'/'comp', use max_chars=250000 or higher to include the full Summary Compensation Table and CD&A."
             ),
             inputSchema={
                 "type": "object",
@@ -396,10 +395,10 @@ async def handle_list_tools() -> list[types.Tool]:
                     "max_chars": {
                         "type": "number",
                         "description": (
-                            "Maximum characters to return (default: 100000). "
-                            "Executive compensation tables and footnotes can be 100,000–300,000 chars — use 200000+."
+                            "Maximum characters to return (default: 200000). "
+                            "Executive compensation section including CD&A and Summary Compensation Table often exceeds 150,000 chars — use 250000+ if truncated."
                         ),
-                        "default": 100000,
+                        "default": 200000,
                     },
                 },
                 "required": ["ticker"],
@@ -670,7 +669,7 @@ async def handle_call_tool(
             filing_type = arguments.get("filing_type", "10-K")
             section = arguments.get("section") or None
             count = int(arguments.get("count", 1))
-            max_chars = int(arguments.get("max_chars", 100000))
+            max_chars = int(arguments.get("max_chars", 200000))
 
             client = SECFilingTextClient()
             results = await asyncio.to_thread(
